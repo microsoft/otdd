@@ -11,12 +11,10 @@ First install dependencies. Start by install pytorch with desired configuration 
 Then do:
 ```
 pip install -r requirements.txt
-# local package
--e .
 ```
-Then this package:
+Finally, install this package:
 ```
-pip install -e .
+pip install .
 ```
 
 ### Usage Examples
@@ -48,7 +46,7 @@ d = dist.distance(maxsamples = 1000)
 
 ### Using a custom feature distance
 
-By default, OTDD using the (squared) Euclidean distance between features. To use a custom distance in domains where it makes sense to use one (e.g., images), one can pass a callable to OTDD using the `feature_cost` arg. Example:
+By default, OTDD uses the (squared) Euclidean distance between features. To use a custom distance in domains where it makes sense to use one (e.g., images), one can pass a callable to OTDD using the `feature_cost` arg. Example:
 
 ```python
 
