@@ -1,3 +1,12 @@
+"""
+    Routines for computing matrix square roots.
+
+    With ideas from:
+
+    https://github.com/steveli/pytorch-sqrtm/blob/master/sqrtm.py
+    https://github.com/pytorch/pytorch/issues/25481
+"""
+
 import pdb
 import torch
 from torch.autograd import Function
@@ -9,8 +18,7 @@ try:
 except:
     import numpy as cp
 
-
-### VIA SVD, version 1: from https://github.com/pytorch/pytorch/issues/25481
+#### VIA SVD, version 1: from https://github.com/pytorch/pytorch/issues/25481
 def symsqrt_v1(A, func='symeig'):
     """Compute the square root of a symmetric positive definite matrix."""
     ## https://github.com/pytorch/pytorch/issues/25481#issuecomment-576493693
@@ -39,6 +47,7 @@ def symsqrt_v1(A, func='symeig'):
     return (v * s.sqrt().unsqueeze(-2)) @ v.transpose(-2, -1)
 
 
+#### VIA SVD, version 2: from https://github.com/pytorch/pytorch/issues/25481
 def symsqrt_v2(A, func='symeig'):
     """Compute the square root of a symmetric positive definite matrix."""
     if func == 'symeig':
@@ -75,7 +84,10 @@ def special_sylvester(a, b):
 
 
 ##### Via Newton-Schulz: based on
+## https://github.com/msubhransu/matrix-sqrt/blob/master/matrix_sqrt.py, and
+## https://github.com/BorisMuzellec/EllipticalEmbeddings/blob/master/utils.py
 def sqrtm_newton_schulz(A, numIters, reg=None, return_error=False, return_inverse=False):
+    """ Matrix squareroot based on Newton-Schulz method """
     if A.ndim <= 2: # Non-batched mode
         A = A.unsqueeze(0)
         batched = False
@@ -83,9 +95,11 @@ def sqrtm_newton_schulz(A, numIters, reg=None, return_error=False, return_invers
         batched = True
     batchSize = A.shape[0]
     dim = A.shape[1]
-    normA = (A**2).sum((-2,-1)).sqrt() #Slightly faster than : A.mul(A).sum((-2,-1)).sqrt()
+    normA = (A**2).sum((-2,-1)).sqrt() # Slightly faster than : A.mul(A).sum((-2,-1)).sqrt()
 
     if reg:
+        ## Renormalize so that the each matrix has a norm lesser than 1/reg,
+        ## but only normalize when necessary
         normA *= reg
         renorm = torch.ones_like(normA)
         renorm[torch.where(normA > 1.0)] = normA[cp.where(normA > 1.0)]
@@ -134,16 +148,11 @@ def compute_error(A, sA):
 
 ###==========================
 
-#
-#
-
-
 class MatrixSquareRoot(Function):
     """Square root of a positive definite matrix.
-    NOTE: matrix square root is not differentiable for matrices with
-          zero eigenvalues.
 
-    TODO: Make batch version of this
+    NOTE: square root is not differentiable for matrices with zero eigenvalues.
+
     """
     @staticmethod
     def forward(ctx, input, method = 'numpy'):
@@ -172,14 +181,12 @@ class MatrixSquareRoot(Function):
 
 
 ## ========================================================================== ##
-
 ## NOTE: Must pick which version of matrix square root to use!!!!
 
 ## sqrtm = MatrixSquareRoot.apply
 sqrtm = symsqrt_v2
 ## sqrtm = symsqrt_v1
 ## sqrtm = symsqrt_diff
-
 ## ========================================================================== ##
 
 def main():
@@ -188,11 +195,11 @@ def main():
     k = torch.randn(5, 20, 20).double()
     M = k @ k.transpose(-1,-2)
 
-    s1 = symsqrt(M, func='symeig')
+    s1 = symsqrt_v1(M, func='symeig')
     test = torch.allclose(M, s1 @ s1.transpose(-1,-2))
     print('Via symeig:', test)
 
-    s2 = symsqrt(M, func='svd')
+    s2 = symsqrt_v1(M, func='svd')
     test = torch.allclose(M, s2 @ s2.transpose(-1,-2))
     print('Via svd:  ', test)
 

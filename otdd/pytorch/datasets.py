@@ -114,8 +114,7 @@ class SubsetSampler(torch.utils.data.Sampler):
         return len(self.indices)
 
 class CustomTensorDataset(torch.utils.data.Dataset):
-    """TensorDataset with support of transforms.
-    """
+    """TensorDataset with support of transforms."""
     def __init__(self, tensors, transform=None):
         assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
         self.tensors = tensors
@@ -135,9 +134,10 @@ class CustomTensorDataset(torch.utils.data.Dataset):
         return self.tensors[0].size(0)
 
 class SubsetFromLabels(torch.utils.data.dataset.Dataset):
-    r"""
-    Subset of a dataset at specified indices. Adapted from torch.utils.data.dataset.Subset
-    to allow for label re-mapping without having to copy whole dataset.
+    """ Subset of a dataset at specified indices.
+
+    Adapted from torch.utils.data.dataset.Subset to allow for label re-mapping
+    without having to copy whole dataset.
 
     Arguments:
         dataset (Dataset): The whole Dataset
@@ -204,6 +204,25 @@ gmm_configs = {
 
 def make_gmm_dataset(config='random', classes=10,dim=2,samples=10,spread = 1,
                      shift=None, rotate=None, diagonal_cov=False, shuffle=True):
+    """ Generate Gaussian Mixture Model datasets.
+
+    Arguments:
+        config (str): determines cluster locations, one of 'random' or 'star'
+        classes (int): number of classes in dataset
+        dim (int): feature dimension of dataset
+        samples (int): number of samples in dataset
+        spread (int): separation of clusters
+        shift (bool): whether to add a shift to dataset
+        rotate (bool): whether to rotate dataset
+        diagonal_cov(bool): whether to use a diagonal covariance matrix
+        shuffle (bool): whether to shuffle example indices
+
+    Returns:
+        X (tensor): tensor of size (samples, dim) with features
+        Y (tensor): tensor of size (samples, 1) with labels
+        distribs (torch.distributions): data-generating distributions of each class
+
+    """
     means, covs, distribs = [], [], []
     _configd = gmm_configs[config]
     spread = spread if (config == 'random' or not 'spread' in _configd) else _configd['spread']
@@ -246,7 +265,8 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
                     resize=None, to3channels=False,
                     maxsize = None, maxsize_test=None, num_workers = 0, transform=None,
                     data=None, datadir=None, download=True, filt=False, print_stats = False):
-    """
+    """ Load torchvision datasets.
+
         We return train and test for plots and post-training experiments
     """
     if shuffle == True and random_seed:
@@ -270,6 +290,7 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
 
         if resize:
             if not dataname in DATASET_SIZES or DATASET_SIZES[dataname][0] != resize:
+                ## Avoid adding an "identity" resizing
                 transform_list.insert(0, transforms.Resize((resize, resize)))
 
         transform = transforms.Compose(transform_list)
@@ -291,6 +312,7 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
             split = 'letters'
             train = DATASET(datadir, split=split, train=True, download=True, transform=train_transform)
             test = DATASET(datadir, split=split, train=False, download=True, transform=valid_transform)
+            ## EMNIST seems to have a bug - classes are wrong
             _merged_classes = set(['C', 'I', 'J', 'K', 'L', 'M', 'O', 'P', 'S', 'U', 'V', 'W', 'X', 'Y', 'Z'])
             _all_classes = set(list(string.digits + string.ascii_letters))
             classes_split_dict = {
@@ -303,6 +325,7 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
             }
             train.classes = classes_split_dict[split]
             if split == 'letters':
+                ## The letters fold (and only that fold!!!) is 1-indexed
                 train.targets -= 1
                 test.targets -= 1
         elif dataname == 'STL10':
@@ -318,10 +341,6 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
     else:
         train, test = data
 
-    if filt:
-        mask = [i for i in range(len(train)) if train.targets[i] not in [1,2,3,4,5]]
-        train.data = train.data[mask]
-        train.targets = train.targets[mask]
 
     if type(train.targets) is list:
         train.targets = torch.LongTensor(train.targets)
@@ -333,7 +352,6 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
 
 
     ### Data splitting
-
     fold_idxs    = {}
     if splits is None and valid_size == 0:
         ## Only train
@@ -391,7 +409,7 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
     fnames = '/'.join(list(fnames) + ['test'])
     flens  = '/'.join(map(str, list(flens) + [len(test)]))
 
-    if hasattr(train, 'data'): # Imagenet doesn't have data as such - any other way to findout dim?
+    if hasattr(train, 'data'):
         logger.info('Input Dim: {}'.format(train.data.shape[1:]))
     logger.info('Classes: {} (effective: {})'.format(len(train.classes), len(torch.unique(train.targets))))
     print(f'Fold Sizes: {flens} ({fnames})')
@@ -399,9 +417,8 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
     return fold_loaders, {'train': train, 'test':test}
 
 
-
-
 def load_imagenet(datadir=None, resize=None, tiny=False, **kwargs):
+    """ Load ImageNet dataset """
     print(datadir)
     if datadir is None and (not tiny):
         datadir = os.path.join(HOME_DIR,'datasets/imagenet')
@@ -471,9 +488,11 @@ def load_textclassification_data(dataname, vecname='glove.42B.300d', shuffle=Tru
             loading_method='sentence_transformers', device='cpu',
             embedding_model=None,
             batch_size = 16, valid_size=0.1, maxsize=None, print_stats = False):
-    """ torchtext's TextClassification datasets are a bit different from the others:
-        - they don't have split or ?? methods.
-        - no obvious creation of nor access to fields
+    """ Load torchtext datasets.
+
+    Note: torchtext's TextClassification datasets are a bit different from the others:
+        - they don't have split method.
+        - no obvious creation of (nor access to) fields
 
     """
 
@@ -520,8 +539,8 @@ def load_textclassification_data(dataname, vecname='glove.42B.300d', shuffle=Tru
         ## load_vectors reindexes embeddings so that they match the vocab's itos indices.
         train._vocab.load_vectors(vecname,cache=veccache,max_vectors = 50000)
         test._vocab.load_vectors(vecname,cache=veccache, max_vectors = 50000)
-        #
 
+        ## Define Fields for Text and Labels
         text_field = torchtext.data.Field(sequential=True, lower=True,
                            tokenize=get_tokenizer("basic_english"),
                            batch_first=True,
@@ -561,7 +580,7 @@ def load_textclassification_data(dataname, vecname='glove.42B.300d', shuffle=Tru
         else:
             batch_processor = None
 
-    ## seems like torchtext alredy maps class ids to 0...n-1. Adapt class names to account for this.
+    ## Seems like torchtext alredy maps class ids to 0...n-1. Adapt class names to account for this.
     classes = torchtext.datasets.text_classification.LABELS[dataname]
     classes = [classes[k+1] for k in range(len(classes))]
     train.classes = classes
@@ -620,18 +639,31 @@ class H5Dataset(torchdata.Dataset):
         return self.data.shape[0]
 
 
-
-
 def combine_datasources(dset, dset_extra, valid_size=0, shuffle=True, random_seed=2019,
-                      maxsize=None, device='cpu'):
-    """ Extends dataloader with additional data from other dataset(s)
-        Note that we add the examples in dset only to train (no validation)
+                        maxsize=None, device='cpu'):
+    """ Combine two datasets.
+
+    Extends dataloader with additional data from other dataset(s). Note that we
+    add the examples in dset only to train (no validation)
+
+    Arguments:
+        dset (DataLoader): first dataloader
+        dset_extra (DataLoader): additional dataloader
+        valid_size (float): fraction of data use for validation fold
+        shiffle (bool): whether to shuffle train data
+        random_seed (int): random seed
+        maxsize (int): maximum number of examples in either train or validation loader
+        device (str): device for data loading
+
+    Returns:
+        train_loader_ext (DataLoader): train dataloader for combined data sources
+        valid_loader_ext (DataLoader): validation dataloader for combined data sources
+
     """
     if shuffle == True and random_seed:
         np.random.seed(random_seed)
 
-
-    ### Approach 2: Convert both to TensorDataset
+    ## Convert both to TensorDataset
     if isinstance(dset, torch.utils.data.DataLoader):
         dataloader_args = {k:getattr(dset, k) for k in ['batch_size', 'num_workers']}
         X, Y = load_full_dataset(dset, targets=True, device=device)
@@ -640,7 +672,7 @@ def combine_datasources(dset, dset_extra, valid_size=0, shuffle=True, random_see
         dset = torch.utils.data.TensorDataset(X, Y)
         logger.info(f'Main data size. X: {X.shape}, Y: {Y.shape}')
     elif isinstance(dst, torch.utils.data.Dataset):
-        raise ValueError()
+        raise NotImplemented('Error: combine_datasources cant take Datasets yet.')
 
     merged_dset = torch.utils.data.ConcatDataset([dset, dset_extra])
     train_idx, valid_idx = random_index_split(len(dset), 1-valid_size, (maxsize, None)) # No maxsize for validation
@@ -656,7 +688,6 @@ def combine_datasources(dset, dset_extra, valid_size=0, shuffle=True, random_see
     train_loader_ext  = dataloader.DataLoader(merged_dset, sampler =  train_sampler, **dataloader_args)
     valid_loader_ext  = dataloader.DataLoader(merged_dset, sampler =  valid_sampler, **dataloader_args)
 
-    ### DEBUG
     logger.info(f'Fold Sizes: {len(train_idx)}/{len(valid_idx)} (train/valid)')
 
     return train_loader_ext, valid_loader_ext

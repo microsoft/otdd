@@ -1,14 +1,14 @@
 # Optimal Transport Dataset Distance (OTDD)
 
+Codebase accompanying the paper [Geometric Dataset Distances via Optimal Transport](https://papers.nips.cc/paper/2020/file/f52a7b2610fb4d3f74b4106fb80b233d-Paper.pdf). See the paper for technical details, or the [MSR Blog Post](https://www.microsoft.com/en-us/research/blog/measuring-dataset-similarity-using-optimal-transport/) for a high-level introduction.
+
 ## Getting Started
 
 ### Installation
 
-Note: It is highly recommended that the following be done inside a virtual environment
+**Note**: It is highly recommended that the following be done inside a virtual environment
 
-First install dependencies. Start by install pytorch with desired configuration using the instructions [here](https://pytorch.org/get-started/locally/).
-
-Then do:
+First install dependencies. Start by install pytorch with desired configuration using the instructions provided in the [pytorch website](https://pytorch.org/get-started/locally/). Then do:
 ```
 pip install -r requirements.txt
 ```
@@ -26,19 +26,19 @@ from otdd.pytorch.datasets import load_torchvision_data
 from otdd.pytorch.distance import DatasetDistance
 
 
-# Load data etc ...
+# Load datasets
 loaders_src = load_torchvision_data('MNIST', valid_size=0, resize = 28, maxsize=2000)[0]
-loaders_tgt  = load_torchvision_data('USPS',  valid_size=0, resize = 28, maxsize=2000)[0]
+loaders_tgt = load_torchvision_data('USPS',  valid_size=0, resize = 28, maxsize=2000)[0]
 
 # Instantiate distance
 dist = DatasetDistance(loaders_src['train'], loaders_tgt['train'],
-                          inner_ot_method = 'exact',
-                          debiased_loss = True,
-                          precision='single',                          
-                          p = 2, entreg = 1e-1,
-                          device=device)
+                       inner_ot_method = 'exact',
+                       debiased_loss = True,
+                       p = 2, entreg = 1e-1,
+                       device=device)
 
 d = dist.distance(maxsamples = 1000)
+print(f'OTDD(src,tgt)={d}')
 
 ```
 
@@ -57,9 +57,9 @@ from functools import partial
 
 # Load MNIST/CIFAR in 3channels (needed by torchvision models)
 
-loaders_src,_ = load_torchvision_data('CIFAR10',  valid_size=0,  resize = 28, maxsize=2000)
+loaders_src,_ = load_torchvision_data('CIFAR10', valid_size=0, resize = 28, maxsize=2000)
 loaders_tgt,_ = load_torchvision_data('MNIST', valid_size=0, resize = 28,
-                                      to3channels=True, maxsize=2000) # No splitting at first
+                                      to3channels=True, maxsize=2000)
 
 
 # Embed using a pretrained (+frozen) resnet
@@ -70,10 +70,10 @@ for p in embedder.parameters():
 
 # Here we use same embedder for both datasets
 feature_cost = partial(embedded_feature_cost,
-                           emb_x = embedder,
-                           dim_x = (3,28,28),
-                           emb_y = embedder,
-                           dim_y = (3,28,28),
+                           emb_src = embedder,
+                           dim_src = (3,28,28),
+                           emb_tgt = embedder,
+                           dim_tgt = (3,28,28),
                            p = 2,
                            device=device)
 
@@ -91,6 +91,9 @@ d = dist.distance(maxsamples = 10000)
 
 ```
 
+## Acknowledgements
+
+This repo relies on the [geomloss](https://www.kernel-operations.io/geomloss/) and [POT](https://pythonot.github.io/) packages for internal EMD and Sinkhorn algorithm implementation. We are grateful to the authors and maintainers of those projects.
 
 ## Contributing
 

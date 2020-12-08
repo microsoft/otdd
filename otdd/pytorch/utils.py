@@ -87,12 +87,22 @@ def random_index_split(input, alpha=0.9, max_split_sizes=(None,None)):
 
 
 def extract_dataset_targets(d):
-    """ Extracts labels, classes and effective indices from a object of type
-    torch.util.data.dataset.**. Indices can differ from range(len(d)) if,
-    for example, this is a Subset dataset.
+    """ Extracts targets from dataset.
+
+    Extracts labels, classes and effective indices from a object of type
+    torch.util.data.dataset.**.
 
     Arguments:
         d (torch Dataset): dataset to extract targets from
+
+    Returns:
+        targets (tensor): tensor with integer targets
+        classes (tensor): tensor with class labels (might or might not be integer)
+        indices (tensor): indices of examples
+
+    Note:
+        Indices can differ from range(len(d)) if, for example, this is a Subset dataset.
+
     """
     assert isinstance(d, torch.utils.data.dataset.Dataset)
     if isinstance(d, torch.utils.data.dataset.Subset):
@@ -122,9 +132,22 @@ def extract_dataset_targets(d):
 
 
 def extract_dataloader_targets(dl):
-    """ Extracts labels, classes and effective indices from a object of type
-    torch.util.data.dataloader.**. Indices can differ from range(len(d)) if,
-    for example, loader has a subset sampler.
+    """ Extracts targets from dataloader.
+
+    Extracts labels, classes and effective indices from a object of type
+    torch.util.data.dataset.**.
+
+    Arguments:
+        d (torch DataLoader): dataloader to extract targets from
+
+    Returns:
+        targets (tensor): tensor with integer targets
+        classes (tensor): tensor with class labels (might or might not be integer)
+        indices (tensor): indices of examples
+
+    Note:
+        Indices can differ from range(len(d)) if, for example, this is a Subset dataset.
+
     """
     assert isinstance(dl, torch.utils.data.dataloader.DataLoader)
     assert hasattr(dl, 'dataset'), "Dataloader does not have dataset attribute."
@@ -178,6 +201,11 @@ def load_full_dataset(data, targets=False, labels_keep=None, batch_size = 256,
                               will use it to reindex.
         maxsamples (int): Maximum number of examples to load. (this might not equal
                           actual size of return tensors, if label_keep also provided)
+
+    Returns:
+        X (tensor): tensor of dataset features, stacked along first dimension
+        Y (tensor): tensor of dataset targets
+
     """
     device = process_device_arg(device)
     orig_idxs = None
@@ -351,11 +379,13 @@ def extract_torchmeta_task(cs, class_ids):
     """ Extracts a single "episode" (ie, task) from a ClassSplitter object, in the
         form of a dataset, and appends variables needed by DatasetDistance computation.
 
-        Inputs
-        ======
+        Arguments:
+            cs (torchmeta.transforms.ClassSplitter): the ClassSplitter where to extract data from
+            class_ids (tuple): indices of classes to be selected by Splitter
 
-            - cs (torchmeta.transforms.ClassSplitter): the ClassSplitter where to extract data from
-            - class_ids: tuple of indices of classes to be selected by Splitter
+        Returns:
+            ds_train (Dataset): train dataset
+            ds_test (Dataset): test dataset
 
     """
     ds = cs[class_ids]
@@ -368,7 +398,7 @@ def extract_torchmeta_task(cs, class_ids):
 
 
 def save_image(tensor, fp, dataname, format='png', invert=True):
-    " Similar to torchvision's save_image, but corrects normalization "
+    """ Similar to torchvision's save_image, but corrects normalization """
     if dataname and dataname in DATASET_NORMALIZATION:
         ## Brings back to [0,1] range
         mean, std = (d[0] for d in DATASET_NORMALIZATION[dataname])
@@ -381,7 +411,7 @@ def save_image(tensor, fp, dataname, format='png', invert=True):
 
 def show_grid(tensor, dataname=None, invert=True, title=None,
              save_path=None, to_pil=False, ax = None,format='png'):
-    " Displays image grid. To be used after torchvision's make_grid "
+    """ Displays image grid. To be used after torchvision's make_grid """
     if dataname and dataname in DATASET_NORMALIZATION:
         ## Brings back to [0,1] range
         mean, std = (d[0] for d in DATASET_NORMALIZATION[dataname])
@@ -403,7 +433,7 @@ def show_grid(tensor, dataname=None, invert=True, title=None,
         if title: ax.set_title(title)
 
 def coupling_to_csv(G, fp, thresh = 1e-14, sep=',', labels1=None,labels2=None):
-    " Dumps an OT coupling matrix to a csv file "
+    """ Dumps an OT coupling matrix to a csv file """"
     sG = G.copy()
     if thresh is not None:
         sG[G<thresh] = 0
@@ -423,6 +453,7 @@ def coupling_to_csv(G, fp, thresh = 1e-14, sep=',', labels1=None,labels2=None):
     print('Done!')
 
 def multiclass_hinge_loss(Y1, Y2, margin=1.0):
+    """ Hinge-loss for multi-class classification settings """
     Y1 = torch.nn.functional.one_hot(Y1)
     Y2 = torch.nn.functional.one_hot(Y2)
     n,K = Y1.shape
@@ -436,8 +467,8 @@ def multiclass_hinge_loss(Y1, Y2, margin=1.0):
 ### DEBUGGING TOOLS ###
 
 def get_printer(msg):
-    """ This function returns a printer function, that prints information about a  tensor's
-    gradient. Used by register_hook in the backward pass.
+    """ This function returns a printer function, that prints information about
+    a tensor's gradient. Used by register_hook in the backward pass.
     """
     def printer(tensor):
         if tensor.nelement() == 1:
@@ -456,7 +487,7 @@ def register_gradient_hook(tensor, msg):
     tensor.retain_grad()
     tensor.register_hook(get_printer(msg))
 
-### EIGEN-MANIPULATION TOOLS ### 
+### EIGEN-MANIPULATION TOOLS ###
 
 def rot(v, theta):
     " Extends torch.rot90 to arbitrary degrees (works only for 2d data) "

@@ -23,10 +23,10 @@ def cov(m, mean=None, rowvar=True, inplace=False):
     `x_i` and `x_j`. The element `C_{ii}` is the variance of `x_i`.
 
     Arguments:
-        m (torch Tensor): A 1-D or 2-D array containing multiple variables and observations.
+        m (tensor): A 1-D or 2-D array containing multiple variables and observations.
             Each row of `m` represents a variable, and each column a single
             observation of all those variables.
-        rowvar: If `rowvar` is True, then each row represents a
+        rowvar (bool): If `rowvar` is True, then each row represents a
             variable, with observations in the columns. Otherwise, the
             relationship is transposed: each column represents a variable,
             while the rows contain observations.
@@ -52,10 +52,9 @@ def cov(m, mean=None, rowvar=True, inplace=False):
     mt = m.t()  # if complex: mt = m.t().conj()
     return fact * m.matmul(mt).squeeze()
 
-
 class OnlineStatsRecorder:
-    """
-    Online batch estimation of multivariate sample mean and covariance matrix.
+    """ Online batch estimation of multivariate sample mean and covariance matrix.
+
     Alleviates numerical instability due to catastrophic cancellation that
     the naive estimation suffers from.
 
@@ -82,6 +81,9 @@ class OnlineStatsRecorder:
                                  (i.e. ignore cross-correlation terms). In this
                                  case only diagonal (1xdim) tensor retrieved.
             embedding (callable): if provided, will map features using this
+            device (str): device for storage of computed statistics
+            dtype (torch data type): data type for computed statistics
+
         """
         self.device = device
         self.centered_cov = centered_cov
@@ -98,6 +100,7 @@ class OnlineStatsRecorder:
         self.n = 0
 
     def compute_from_loader(self, dataloader):
+        """ Compute statistics from dataloader """
         device = process_device_arg(self.device)
         for x, _ in dataloader:
             x = x.type(self.dtype).to(device)
@@ -115,7 +118,11 @@ class OnlineStatsRecorder:
         return μ, Σ
 
     def update(self, batch):
-        " data: ndarray, shape (nobservations, ndimensions) "
+        """ Update statistics using batch of data.
+
+        Arguments:
+            data (tensor): tensor of shape (nobservations, ndimensions)
+        """
         if self.n == 0:
             self.n,self.d = batch.shape
             self.μ = batch.mean(axis=0)
@@ -154,12 +161,13 @@ class OnlineStatsRecorder:
             self.n += n
 
     def retrieve(self, verbose=False):
+        """ Retrieve current statistics """
         if verbose: print('Mean and Covariance computed on {} samples'.format(int(self.n)))
         if self.centered_cov:
             return self.μ, self.Σ
         elif self.diagonal_cov:
             Σ = self.Σ - self.μ.pow(2)*self.n/(self.n-1)
-            Σ = torch.nn.functional.relu(Σ) # To avoid negative variances due to rounding?
+            Σ = torch.nn.functional.relu(Σ) # To avoid negative variances due to rounding
             return self.μ, Σ
         else:
             return self.μ, self.Σ - torch.ger(self.μ.T,self.μ)*self.n/(self.n-1)
@@ -286,9 +294,9 @@ def compute_label_stats(data, targets=None,indices=None,classnames=None,
     effective_targets = targets[indices]
 
     if nworkers > 1:
-        import torch.multiprocessing as mp # Ugly, sure. Useful, certainly.
+        import torch.multiprocessing as mp # Ugly, sure. But useful.
         mp.set_start_method('spawn',force=True)
-        M = mp.Manager().dict() # Alternatively, M = {}; M.share_memory?
+        M = mp.Manager().dict() # Alternatively, M = {}; M.share_memory
         S = mp.Manager().dict()
         processes = []
         for i,c in enumerate(classnames): # No. of processes
@@ -340,6 +348,17 @@ def compute_label_stats(data, targets=None,indices=None,classnames=None,
 def dimreduce_means_covs(Means, Covs, redtype='diagonal'):
     """ Methods to reduce the dimensionality of the Feature-Mean/Covariance
         representation of Labels.
+
+    Arguments:
+        Means (tensor or list of tensors):  original mean vectors
+        Covs (tensor or list of tensors):  original covariances matrices
+        redtype (str): dimensionality reduction methods, one of 'diagonal', 'mds'
+            or 'distance_embedding'.
+
+    Returns:
+        Means (tensor or list of tensors): dimensionality-reduced mean vectors
+        Covs (tensor or list of tensors): dimensionality-reduced covariance matrices
+
     """
     n1, d1 = Means[0].shape
     n2, d2 = Means[1].shape

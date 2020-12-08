@@ -1,12 +1,29 @@
+""" Main module for optimal transport dataset distance.
+
+Throught this module, source and target are often used to refer to the two datasets
+being compared. This notation is legacy from NLP, and does not carry other particular
+meaning, e.g., the distance is nevertheless symmetric to the order of D1/D2. The
+reason for this notation is that here X and Y are usually reserved to distinguish
+between features and labels.
+
+Other important notation:
+    X1, X2: feature tensors of the two datasets
+    Y1, Y2: label tensors of the two datasets
+    N1, N2 (or N,M): number of samples in datasets
+    D1, D2: (feature) dimension of the datasets
+    C1, C2: number of classes in the datasets
+    π: transport coupling
+
+"""
 import os
+import pdb
+from time import time
 import itertools
 import numpy as np
 from tqdm.autonotebook import tqdm
 import torch
-from time import time
 from functools import partial
 import inspect
-import pdb
 import logging
 import geomloss
 import ot
@@ -16,8 +33,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 
+## Local Imports
 from ..plotting import heatmap, gaussian_density_plot, imshow_group_boundaries
-
 from .utils import load_full_dataset, augmented_dataset, extract_data_targets
 from .moments import compute_label_stats
 from .wasserstein import efficient_pwdist_gauss, pwdist_exact, pwdist_upperbound, pwdist_means_only
@@ -46,177 +63,76 @@ cost_routines = {
 }
 
 
-class FeatureCost():
-    """ IN order to use this for the euclidean case too, must make sure that we
-        don't add any latency. Check that device stuff doesn't add any, or remove it.
-    """
-    def __init__(self, p=2, emb_x=None, emb_y=None, dim_x=None, dim_y=None, device='cpu'):
-        assert (emb_x is None) or (dim_x is not None)
-        assert (emb_y is None) or (dim_y is not None)
-        self.p = p
-        self.emb_x = emb_x
-        self.emb_y = emb_y
-        self.dim_x = dim_x
-        self.dim_y = dim_y
-        self.device = device
-
-    def _get_batch_shape(self, b):
-        if b.ndim == 3: return b.shape
-        elif b.ndim == 2: return (1,*b.shape)
-        elif b.ndim == 1: return (1,1,b.shape[0])
-
-    def _batchify_computation(self, X, side='x', slices=20):
-        if side == 'x':
-            out = torch.cat([self.emb_x(b).to('cpu') for b in torch.chunk(X, slices, dim=0)])
-        else:
-            out = torch.cat([self.emb_y(b).to('cpu') for b in torch.chunk(X, slices, dim=0)])
-        return out.to(X.device)
-
-    def __call__(self, X1, X2):
-        _orig_device = X1.device
-        device = process_device_arg(self.device)
-        if self.emb_x is not None:
-            B1, N1, D1 = self._get_batch_shape(X1)
-            try:
-                X1 = self.emb_x(X1.view(-1,*self.dim_x).to(self.device)).reshape(B1, N1, -1)
-            except: # Memory error?
-                print('Batchifying feature distance computation')
-                X1 = self._batchify_computation(X1.view(-1,*self.dim_x).to(self.device), 'x').reshape(B1, N1, -1)
-        if self.emb_y is not None:
-            B2, N2, D2 = self._get_batch_shape(X2)
-            try:
-                X2 = self.emb_y(X2.view(-1,*self.dim_y).to(self.device)).reshape(B2, N2, -1)
-            except:
-                print('Batchifying feature distance computation')
-                X2 = self._batchify_computation(X2.view(-1,*self.dim_y).to(self.device), 'y').reshape(B2, N2, -1)
-        if self.p == 1:
-            c = geomloss.utils.distances(X1, X2)
-        elif self.p == 2:
-            c = geomloss.utils.squared_distances(X1, X2) / 2
-        else:
-            raise ValueError()
-        return c.to(_orig_device)
-
-
-def batch_jdot_cost(Z1, Z2, p=2, alpha=1.0, feature_cost=None):
-    " https://papers.nips.cc/paper/6963-joint-distribution-optimal-transportation-for-domain-adaptation.pdf"
-    B, N, D1 = Z1.shape
-    B, M, D2 = Z2.shape
-    assert (D1 == D2) or (feature_cost is not None)
-    Y1 = Z1[:, :, -1].long()
-    Y2 = Z2[:, :, -1].long()
-    if feature_cost is None or feature_cost == 'euclidean': # default is euclidean
-        C1 = cost_routines[p](Z1[:, :, :-1], Z2[:, :, :-1]) 
-    else:
-        C1 = feature_cost(Z1[:, :, :-1], Z2[:, :, :-1])
-    ## hinge loss assumes classes and indices are same for both - shift back to [0,K]
-    C2 = multiclass_hinge_loss(Y1.squeeze()-Y1.min(), Y2.squeeze()-Y2.min()).reshape(B, N, M)
-    return alpha*C1 + C2
-
-
-def batch_augmented_cost(Z1, Z2, W=None, Means=None, Covs=None, feature_cost=None,
-                         p=2, λ_x=1.0, λ_y=1.0):
-    """ To conform to geomloss, it must take as inputs:
-            Z1: torch Tensor of size (B,N,D1), where last position in last dim corresponds to label Y
-            Z2: torch Tensor of size (B,M,D2), idem
-            W:  torch Tensor of size (V1,V2) of precomputed pairwise label distances for all labels V1,V2
-        and returns a batched Cost matrix as a (B,N,M) Tensor.
-
-        W is expected to be congruent with p. I.e, if p=2, W[i,j] should be squared Wasserstein distance.
-
-    """
-
-    B, N, D1 = Z1.shape
-    B, M, D2 = Z2.shape
-    assert (D1 == D2) or (feature_cost is not None)
-
-    Y1 = Z1[:, :, -1].long()
-    Y2 = Z2[:, :, -1].long()
-
-
-    if λ_x is None or λ_x == 0:
-        ## Features ignored in d(z,z'), C1 is dummy
-        logger.info('no d_x')
-        C1 = torch.zeros(B,N,M)
-    elif feature_cost is None or feature_cost == 'euclidean': # default is euclidean
-        C1 = cost_routines[p](Z1[:, :, :-1], Z2[:, :, :-1])  # Get from GeomLoss
-    else:
-        C1 = feature_cost(Z1[:, :, :-1], Z2[:, :, :-1])
-
-    if λ_y is None or λ_y == 0:
-        ## Labels ignored in d(z,z'), C2 is dummy
-        logger.info('no d_y')
-        C2 = torch.zeros_like(C1)
-        λ_y = 0.0
-    elif W is not None:
-        ### Label-to-label distances have been precomputed and passed
-        M = W.shape[1] * Y1[:, :, None] + Y2[:, None, :]
-        C2 = W.flatten()[M.flatten(start_dim=1)].reshape(-1,Y1.shape[1], Y2.shape[1])
-    elif Means is not None and Covs is not None:
-        ## We need to compate label distances too
-        dmeans = cost_routines[p](Means[0][Y1.squeeze()], Means[1][Y2.squeeze()])
-        dcovs  = torch.zeros_like(dmeans)
-        pdb.set_trace("TODO: need to finish this. But will we ever use it?")
-    else:
-        raise ValueError("Must provide either label distances or Means+Covs")
-
-    assert C1.shape == C2.shape
-
-    D = λ_x * C1  +  λ_y * (C2/p) 
-
-    return D
-
-
 class DatasetDistance():
     """The main class for the Optimal Transport Dataset Distance.
 
-    Attributes
-    -----------
-    D1 : torch dataset or dataloader
-        the first dataset
-    D2 : torch dataset or dataloader
-        the second dataset
-    symmetric_tasks : bool
-        whether the two underlying datasets are the same (e.g., when
-        computing distance between subsets of classes)
-    method ('precomputed_labeldist', 'augmentation' or 'jdot'): if 'augmentation', the covariance
-        matrix will be approximated and appended to each point, if 'precomputed_labeldist',
-        the label-to-label distance is computed exactly in advance
-    loss : str
-        only 'sinkhorn' accepted for now
-    debiased_loss (bool): whether to use the debiased version of sinkhorn
-    p (int): the coefficient in the OT cost (i.e., the p in p-Wasserstein)
-    entreg (float): the strength of entropy regularization for sinkhorn
-    online_stats (bool): whether to compute the per-label means and covariance
-        matrices online. If false, for every class, all examples are loaded
-        into memory.
-    coupling_method (str): If 'geomloss', the OT coupling is computed from
-        the dual potentials obtained from geomloss (faster, less precise),
-        if 'pot', it will recomputed using the POT library.
-    sqrt_method (str): If 'spectral' or 'exact', it uses eigendecomposition
-        to compute square root matrices (exact, slower). If 'approximate',
-        it uses Newton-Schulz iterative algorithm (can be faster, though less exact).
-    sqrt_niters (int): Only used if `sqrt_method` is 'approximate'. Determines
-        the number of interations used for Newton-Schulz's approach to sqrtm.
-    sqrt_pref (int): One of 0 or 1. Preference for cov sqrt used in cross-wass
-        distance (only one of the two is needed, see efficient_pairwise_wd_gauss). Useful
-        for differentiable settings, two avoid unecessary computational graph.
-    min_labelcount (int): Classes with less than `min_labelcount` examples will
-        be ignored in the computation of the distance.
-    nworkers_stats (int): Number of parallel workers used in mean and
-        covariance estimation.
-    nworkers_dists (int): Number of parallel workers used in distance compitation.
-    device (str): Which device to use in pytorch convention (e.g. 'cuda:2')
+    An object of this class is instantiated with two datasets (the source and
+    target), which are stored in it, and various arguments determining how the
+    OTDD is to be computed.
 
-    Methods
-    -------
-    distance():
-        Compute the distance between the two datasets
-    compute_coupling():
-        Compute the
-    plot_label_stats():
-    plot_label_distances():
-    plot_coupling():
+
+    Arguments:
+        D1 (Dataset or Dataloader): the first (aka source) dataset.
+        D2 (Dataset or Dataloader): the second (aka target) dataset.
+        method (str): if set to 'augmentation', the covariance matrix will be
+            approximated and appended to each point, if 'precomputed_labeldist',
+            the label-to-label distance is computed exactly in advance.
+        symmetric_tasks (bool): whether the two underlying datasets are the same
+            (e.g., when computing distance between subsets of classes).
+        feature_cost (str or callable): if not 'euclidean', must be a callable
+            that implements a cost function between feature vectors.
+        src_embedding (callable, optional): if provided, source data will be
+            embedded using this function prior to distance computation.
+        tgt_embedding (callable, optional): if provided, target data will be
+            embedded using this function prior to distance computation.
+        loss (str): loss type to be passed to samples_loss. only 'sinkhorn' is
+            accepted for now.
+        debiased_loss (bool): whether to use the debiased version of sinkhorn.
+        p (int): the coefficient in the OT cost (i.e., the p in p-Wasserstein).
+        entreg (float): the strength of entropy regularization for sinkhorn.
+        λ_x (float): weight parameter for feature component of distance.
+        λ_y (float): weight parameter for label component of distance.
+        inner_ot_method (str): the method to compute the inner (instance-wise)
+            OT problem. Must be one of 'gaussian_approx', 'exact', 'jdot', or
+            'naive_upperbound'. If set to 'gaussian_approx', the label distributions
+            are approximated as Gaussians, and thus their distance is computed as
+            the Bures-Wasserstein distance. If set to 'exact', no approximation is
+            used, and their distance is computed as an exact Wasserstein problem.
+            If 'naive_upperbound', a simple upper bound on the exact distance is
+            computed. If 'jdot', the label distance is computed using a classifi-
+            cation loss (see JDOT paper for details).
+        inner_ot_loss (str): loss type fo inner OT problem.
+        inner_ot_debiased (bool): whether to use the debiased version of sinkhorn
+            in the inner OT problem.
+        inner_ot_p (int): the coefficient in the inner OT cost.
+        inner_ot_entreg (float): the strength of entropy regularization for sinkhorn
+            in the inner OT problem.
+        diagonal_cov (bool): whether to use the diagonal approxiation to covariance.
+        min_labelcount (int): classes with less than `min_labelcount` examples will
+            be ignored in the computation of the distance.
+        online_stats (bool): whether to compute the per-label means and covariance
+            matrices online. If false, for every class, all examples are loaded
+            into memory.
+        coupling_method (str): If 'geomloss', the OT coupling is computed from
+            the dual potentials obtained from geomloss (faster, less precise),
+            if 'pot', it will recomputed using the POT library.
+        sqrt_method (str): If 'spectral' or 'exact', it uses eigendecomposition
+            to compute square root matrices (exact, slower). If 'approximate',
+            it uses Newton-Schulz iterative algorithm (can be faster, though less exact).
+        sqrt_niters (int): Only used if `sqrt_method` is 'approximate'. Determines
+            the number of interations used for Newton-Schulz's approach to sqrtm.
+        sqrt_pref (int): One of 0 or 1. Preference for cov sqrt used in cross-wass
+            distance (only one of the two is needed, see efficient_pairwise_wd_gauss). Useful
+            for differentiable settings, two avoid unecessary computational graph.
+        nworkers_stats (int): number of parallel workers used in mean and
+            covariance estimation.
+        coupling_method (str): method to use for computing coupling matrix.
+        nworkers_dists(int): number of parallel workers used in distance computation.
+        eigen_correction (bool): whether to use eigen-correction on covariance
+            matrices for additional numerical stability.
+        device (str): Which device to use in pytorch convention (e.g. 'cuda:2')
+        precision (str): one of 'single' or 'double'.
+        verbose (str): level of verbosity.
 
     """
 
@@ -312,13 +228,12 @@ class DatasetDistance():
         else:
             logger.warning('DatasetDistance initialized with empty data')
 
-
         if self.src_embedding is not None or self.tgt_embedding is not None:
             self.feature_cost = partial(embedded_feature_cost,
-                                   emb_x = self.src_embedding,
-                                   dim_x = (3,28,28),
-                                   emb_y = self.tgt_embedding,
-                                   dim_y = (3,28,28),
+                                   src_emb = self.src_embedding,
+                                   src_dim = (3,28,28),
+                                   tgt_emb = self.tgt_embedding,
+                                   tgt_dim = (3,28,28),
                                    p = self.p, device=self.device)
 
         self.src_embedding = None
@@ -326,6 +241,9 @@ class DatasetDistance():
 
 
     def _init_data(self, D1, D2):
+        """ Preprocessing of datasets. Extracts value and coding for effective
+        (i.e., those actually present in sampled data) class labels.
+        """
         targets1, classes1, idxs1 = extract_data_targets(D1)
         targets2, classes2, idxs2 = extract_data_targets(D2)
         self.targets1, self.targets2 = targets1, targets2
@@ -335,19 +253,19 @@ class DatasetDistance():
         self.n1 = len(self.idxs1)
         self.n2 = len(self.idxs2)
 
-        ## Effective classes seen in data (idxs here needed to filter in case dataloader has subsampler)
+        ## Effective classes seen in data (idxs here needed to be filtered
+        ## in case dataloader has subsampler)
         ## Indices of classes (might be different from class ids!)
-
         vals1, cts1 = torch.unique(targets1[idxs1], return_counts=True)
         vals2, cts2 = torch.unique(targets2[idxs2], return_counts=True)
 
-        ## Ignore everythnig with a label occurring less than k times
+        ## Ignore everything with a label occurring less than k times
         self.V1 = torch.sort(vals1[cts1 >= self.min_labelcount])[0]
         self.V2 = torch.sort(vals2[cts2 >= self.min_labelcount])[0]
         self.classes1 = [classes1[i] for i in self.V1]
         self.classes2 = [classes2[i] for i in self.V2]
 
-        if self.method == 'jdot':
+        if self.method == 'jdot': ## JDOT only works if same labels on both datasets
             assert torch.all(self.V1 == self.V2)
 
 
@@ -356,7 +274,11 @@ class DatasetDistance():
         self.class_to_idx_2 = {i: c for i, c in enumerate(self.V2)}
 
     def copy(self, keep=[], drop=[]):
-        """ Copies 'shell' of object only: configs, but no dataset or its derivatives """
+        """ Copy method for Dataset Distance object.
+
+        Copies 'shell' of object only: configs, but no dataset or its derivatives.
+
+        """
         dataattrs = ['D1', 'D2','X1', 'X2','Y1','Y2','V1','V2',
                     'targets1', 'targets2', 'classes1', 'classes2',
                     'idxs1', 'idxs2', 'class_to_idx_1', 'class_to_idx_2',
@@ -381,10 +303,13 @@ class DatasetDistance():
         return dobj
 
     def _load_datasets(self, maxsamples=None, device=None):
-        """ Loads full datasets into memory (into gpu if in CUDA mode).
-            This is only currently used in subgroup_distance for repeated computation.
+        """ Dataset loading, wrapper for `load_full_dataset` function.
 
-            If provided, device will override class attribute device
+        Loads full datasets into memory (into gpu if in CUDA mode).
+
+        Arguments:
+            maxsamples (int, optional): maximum number of samples to load.
+            device (str, optional): if provided, will override class attribute device.
         """
         logger.info('Concatenating feature vectors...')
 
@@ -435,8 +360,11 @@ class DatasetDistance():
                                                           self.X2.shape, len(self.V2)))
 
     def _get_label_stats(self, side='both'):
-        """ Computes per-label means and covariances only once, then stores
-            and retrieves in subsequent calls.
+        """ Return per-label means and covariances.
+
+        Computes means and covariances only once, then stores and retrieves in
+        subsequent calls.
+
         """
         ## Check if already computed
         if (not None in self.Means) and (not None in self.Covs):
@@ -474,14 +402,20 @@ class DatasetDistance():
     def _get_label_distances(self):
         """ Precompute label-to-label distances.
 
-        Returns tensor of size nclasses_1 x nclasses_2
+        Returns tensor of size nclasses_1 x nclasses_2.
 
         Useful when computing multiple distances on same pair of datasets
         e.g. between subsets of each datasets. Will store them in memory.
 
         Only useful if method=='precomputed_labeldist', for now.
 
-        Note that _get_label_stats not called for inner)
+        Note that _get_label_stats not called for inner_ot_method = `exact`,
+        since exact computation does not use Gaussian approximation, so means
+        and covariances are not needed.
+
+        Returns:
+            label_distances (torch.tensor): tensor of size (C1, C2) with pairwise
+                label-to-label distances across the two datasets.
 
         """
         ## Check if already computed
@@ -489,7 +423,6 @@ class DatasetDistance():
             return self.label_distances
 
         ## If not, compute from scratch
-
         if self.inner_ot_method == 'gaussian_approx':
             ## Instantiate call to pairwise wasserstein distance
             pwdist = partial(efficient_pwdist_gauss,
@@ -633,6 +566,23 @@ class DatasetDistance():
         return self.label_distances
 
     def distance(self, maxsamples=10000, return_coupling=False):
+        """ Compute dataset distance.
+
+            Note:
+                Currently both methods require fully loading dataset into memory,
+                this can probably be avoided, e.g., via subsampling.
+
+            Arguments:
+                maxsamples (int): maximum number of samples used in outer-level
+                    OT problem. Note that this is different (and usually smaller)
+                    than the number of samples used when computing means and covs.
+                return_coupling (bool): whether to return the optimal coupling.
+
+            Returns:
+                dist (float): the optimal transport dataset distance value.
+                π (tensor, optional): the optimal transport coupling.
+
+        """
         device_dists = self.device
         if (self.n1 > 5000 or self.n2 > 5000) and maxsamples > 1000 and self.device != 'cpu':
             logger.warning('Warning: maxsamples = {} > 5000, and device = {}. Loaded data' \
@@ -651,7 +601,8 @@ class DatasetDistance():
             DB = (self.X2, self.Y2)
 
             if self.λ_x != 1.0 or self.λ_y != 1.0:
-                raise NotImplementedError()
+                raise NotImplementedError('Unevenly weighted feature/label' \
+                    'not available for method=augmentation yet')
 
             if not hasattr(self, 'XμΣ1') or self.XμΣ1 is None:
                 XA = augmented_dataset(DA, self.Means[0], self.Covs[0], maxn=maxsamples)#, diagonal_cov=self.diagonal_cov)
@@ -763,6 +714,7 @@ class DatasetDistance():
             del Z1, Z2
 
 
+        ## Admittedly ugly but might be necessary to avoid memory clogs
         torch.cuda.empty_cache()
 
         if return_coupling:
@@ -771,7 +723,17 @@ class DatasetDistance():
             return dist
 
     def compute_coupling(self, entreg=None, gpu=None, **kwargs):
-        """ kwargs are args for ot.sinkhorn """
+        """ Compute the optimal transport coupling.
+
+        Arguments:
+            entreg (float): strength of entropy regularization.
+            gpu (bool): whether to use gpu for coupling computation.
+            **kwargs: arbitrary keyword args passed to ot.sinkhorn
+
+        Returns:
+            π (tensor): tensor of size (N1, N2) with optimal transport coupling.
+
+        """
         if self.X1 is None or self.X2 is None:
             self._load_datasets()
         entreg = entreg if entreg else self.entreg
@@ -799,9 +761,8 @@ class DatasetDistance():
         return π
 
     def final_distance(self):
-        """
-        FIXME: What is the purpose of this function?
-        Computes the outer-level OT distance between the datasets.
+        """ Computes the outer-level OT distance between the datasets.
+        FIXME: This function seems to be deprecated.
         """
         α = ot.utils.unif(self.n1)
         β = ot.utils.unif(self.n2)
@@ -1068,11 +1029,17 @@ class DatasetDistance():
 
 
 class IncomparableDatasetDistance(DatasetDistance):
+    """ Dataset Distance subclass for datasets that have different feature dimension.
+
+    Note:
+        Proceed with caution, this class is still experimental and in active
+        development
+
+    """
     def __init__(self, *args, **kwargs):
         super(IncomparableDatasetDistance, self).__init__(*args, **kwargs)
         if self.debiased_loss:
             raise ValueError('Debiased GWOTDD not implemented yet')
-
 
     def _get_label_distances(self):
         """
@@ -1147,5 +1114,156 @@ class IncomparableDatasetDistance(DatasetDistance):
             return dist
 
 
+class FeatureCost():
+    """ Class implementing a cost (or distance) between feature vectors.
+
+    Arguments:
+        p (int): the coefficient in the OT cost (i.e., the p in p-Wasserstein).
+        src_embedding (callable, optional): if provided, source data will be
+            embedded using this function prior to distance computation.
+        tgt_embedding (callable, optional): if provided, target data will be
+            embedded using this function prior to distance computation.
+
+    """
+    def __init__(self, p=2, src_emb=None, tgt_emb=None, src_dim=None, tgt_dim=None, device='cpu'):
+        assert (src_emb is None) or (src_dim is not None)
+        assert (tgt_emb is None) or (tgt_dim is not None)
+        self.p = p
+        self.src_emb = src_emb
+        self.tgt_emb = tgt_emb
+        self.src_dim = src_dim
+        self.tgt_dim = tgt_dim
+        self.device = device
+
+    def _get_batch_shape(self, b):
+        if b.ndim == 3: return b.shape
+        elif b.ndim == 2: return (1,*b.shape)
+        elif b.ndim == 1: return (1,1,b.shape[0])
+
+    def _batchify_computation(self, X, side='x', slices=20):
+        if side == 'x':
+            out = torch.cat([self.src_emb(b).to('cpu') for b in torch.chunk(X, slices, dim=0)])
+        else:
+            out = torch.cat([self.tgt_emb(b).to('cpu') for b in torch.chunk(X, slices, dim=0)])
+        return out.to(X.device)
+
+    def __call__(self, X1, X2):
+        _orig_device = X1.device
+        device = process_device_arg(self.device)
+        if self.src_emb is not None:
+            B1, N1, D1 = self._get_batch_shape(X1)
+            try:
+                X1 = self.src_emb(X1.view(-1,*self.src_dim).to(self.device)).reshape(B1, N1, -1)
+            except: # Memory error?
+                print('Batchifying feature distance computation')
+                X1 = self._batchify_computation(X1.view(-1,*self.src_dim).to(self.device), 'x').reshape(B1, N1, -1)
+        if self.tgt_emb is not None:
+            B2, N2, D2 = self._get_batch_shape(X2)
+            try:
+                X2 = self.tgt_emb(X2.view(-1,*self.tgt_dim).to(self.device)).reshape(B2, N2, -1)
+            except:
+                print('Batchifying feature distance computation')
+                X2 = self._batchify_computation(X2.view(-1,*self.tgt_dim).to(self.device), 'y').reshape(B2, N2, -1)
+        if self.p == 1:
+            c = geomloss.utils.distances(X1, X2)
+        elif self.p == 2:
+            c = geomloss.utils.squared_distances(X1, X2) / 2
+        else:
+            raise ValueError()
+        return c.to(_orig_device)
 
 
+def batch_jdot_cost(Z1, Z2, p=2, alpha=1.0, feature_cost=None):
+    " https://papers.nips.cc/paper/6963-joint-distribution-optimal-transportation-for-domain-adaptation.pdf"
+    B, N, D1 = Z1.shape
+    B, M, D2 = Z2.shape
+    assert (D1 == D2) or (feature_cost is not None)
+    Y1 = Z1[:, :, -1].long()
+    Y2 = Z2[:, :, -1].long()
+    if feature_cost is None or feature_cost == 'euclidean': # default is euclidean
+        C1 = cost_routines[p](Z1[:, :, :-1], Z2[:, :, :-1]) 
+    else:
+        C1 = feature_cost(Z1[:, :, :-1], Z2[:, :, :-1])
+    ## hinge loss assumes classes and indices are same for both - shift back to [0,K]
+    C2 = multiclass_hinge_loss(Y1.squeeze()-Y1.min(), Y2.squeeze()-Y2.min()).reshape(B, N, M)
+    return alpha*C1 + C2
+
+
+def batch_augmented_cost(Z1, Z2, W=None, Means=None, Covs=None, feature_cost=None,
+                         p=2, λ_x=1.0, λ_y=1.0):
+    """ Batch ground cost computation on augmented datasets.
+
+    Defines a cost function on augmented feature-label samples to be passed to
+    geomloss' samples_loss. Geomloss' expected inputs determine the requirtements
+    below.
+
+    Args:
+        Z1 (torch.tensor): torch Tensor of size (B,N,D1), where last position in
+            last dim corresponds to label Y.
+        Z2 (torch.tensor): torch Tensor of size (B,M,D2), where last position in
+            last dim corresponds to label Y.
+        W (torch.tensor): torch Tensor of size (V1,V2) of precomputed pairwise
+            label distances for all labels V1,V2 and returns a batched cost
+            matrix as a (B,N,M) Tensor. W is expected to be congruent with p.
+            I.e, if p=2, W[i,j] should be squared Wasserstein distance.
+        Means (torch.tensor, optional): torch Tensor of size (C1, D1) with per-
+            class mean vectors.
+        Covs (torch.tensor, optional): torch Tehsor of size (C2, D2, D2) with
+            per-class covariance matrices
+        feature_cost (string or callable, optional): if None or 'euclidean', uses
+            euclidean distances as feature metric, otherwise uses this function
+            as metric.
+        p (int): order of Wasserstein distance.
+        λ_x (float): weight parameter for feature component of distance
+        λ_y (float): weight parameter for label component of distance
+
+    Returns:
+        D (torch.tensor): torch Tensor of size (B,N,M)
+
+    Raises:
+        ValueError: If neither W nor (Means, Covs) are provided.
+
+    """
+
+    B, N, D1 = Z1.shape
+    B, M, D2 = Z2.shape
+    assert (D1 == D2) or (feature_cost is not None)
+
+    Y1 = Z1[:, :, -1].long()
+    Y2 = Z2[:, :, -1].long()
+
+    ## Compute distances between features X in the usual way
+    if λ_x is None or λ_x == 0:
+        ## Features ignored in d(z,z'), C1 is dummy
+        logger.info('no d_x')
+        C1 = torch.zeros(B,N,M)
+    elif feature_cost is None or feature_cost == 'euclidean': # default is euclidean
+        C1 = cost_routines[p](Z1[:, :, :-1], Z2[:, :, :-1])  # Get from GeomLoss
+    else:
+        C1 = feature_cost(Z1[:, :, :-1], Z2[:, :, :-1])
+
+    if λ_y is None or λ_y == 0:
+        ## Labels ignored in d(z,z'), C2 is dummy
+        logger.info('no d_y')
+        C2 = torch.zeros_like(C1)
+        λ_y = 0.0
+    elif W is not None:
+        ## Label-to-label distances have been precomputed and passed
+        ## Stores flattened index corresponoding to label pairs
+        M = W.shape[1] * Y1[:, :, None] + Y2[:, None, :]
+        C2 = W.flatten()[M.flatten(start_dim=1)].reshape(-1,Y1.shape[1], Y2.shape[1])
+    elif Means is not None and Covs is not None:
+        ## We need to compate label distances too
+        dmeans = cost_routines[p](Means[0][Y1.squeeze()], Means[1][Y2.squeeze()])
+        dcovs  = torch.zeros_like(dmeans)
+        pdb.set_trace("TODO: need to finish this. But will we ever use it?")
+    else:
+        raise ValueError("Must provide either label distances or Means+Covs")
+
+    assert C1.shape == C2.shape
+
+    ## NOTE: geomloss's cost_routines as defined above already divide by p. We do
+    ## so here too for consistency. But as a consequence, need to divide C2 by p too.
+    D = λ_x * C1  +  λ_y * (C2/p) 
+
+    return D

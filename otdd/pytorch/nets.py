@@ -1,3 +1,7 @@
+"""
+    Collection of basic neural net models used in the OTDD experiments
+"""
+
 import os
 import torch
 import torch.nn as nn

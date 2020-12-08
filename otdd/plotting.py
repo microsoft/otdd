@@ -1,3 +1,8 @@
+"""Plotting tools for Optimal Transport Dataset Distance.
+
+
+"""
+
 import logging
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -87,28 +92,18 @@ def gaussian_density_plot(P=None, X=None, method = 'exact', nsamples = 1000,
 
 def heatmap(data, row_labels, col_labels, ax=None, cbar=True,
             cbar_kw={}, cbarlabel="", **kwargs):
-    """
-    Create a heatmap from a numpy array and two lists of labels.
+    """ Create a heatmap from a numpy array and two lists of labels.
 
-    Parameters
-    ----------
-    data
-        A 2D numpy array of shape (N, M).
-    row_labels
-        A list or array of length N with the labels for the rows.
-    col_labels
-        A list or array of length M with the labels for the columns.
-    ax
-        A `matplotlib.axes.Axes` instance to which the heatmap is plotted.  If
-        not provided, use current axes or create a new one.  Optional.
-    cbar
-        A boolear value, whether to display colorbar or not
-    cbar_kw
-        A dictionary with arguments to `matplotlib.Figure.colorbar`.  Optional.
-    cbarlabel
-        The label for the colorbar.  Optional.
-    **kwargs
-        All other arguments are forwarded to `imshow`.
+    Args:
+        data: A 2D numpy array of shape (N, M).
+        row_labels: A list or array of length N with the labels for the rows.
+        col_labels: A list or array of length M with the labels for the columns.
+        ax: A `matplotlib.axes.Axes` instance to which the heatmap is plotted.  If
+            not provided, use current axes or create a new one.  Optional.
+        cbar: A boolear value, whether to display colorbar or not
+        cbar_kw: A dictionary with arguments to `matplotlib.Figure.colorbar`.  Optional.
+        cbarlabel: The label for the colorbar.  Optional.
+        **kwargs: All other arguments are forwarded to `imshow`.
     """
 
     if not ax:
@@ -147,29 +142,21 @@ def heatmap(data, row_labels, col_labels, ax=None, cbar=True,
 def annotate_heatmap(im, data=None, valfmt="{x:.2f}",
                      textcolors=["black", "white"],
                      threshold=None, **textkw):
-    """
-    A function to annotate a heatmap.
+    """ A function to annotate a heatmap.
 
-    Parameters
-    ----------
-    im
-        The AxesImage to be labeled.
-    data
-        Data used to annotate.  If None, the image's data is used.  Optional.
-    valfmt
-        The format of the annotations inside the heatmap.  This should either
-        use the string format method, e.g. "$ {x:.2f}", or be a
-        `matplotlib.ticker.Formatter`.  Optional.
-    textcolors
-        A list or array of two color specifications.  The first is used for
-        values below a threshold, the second for those above.  Optional.
-    threshold
-        Value in data units according to which the colors from textcolors are
-        applied.  If None (the default) uses the middle of the colormap as
-        separation.  Optional.
-    **kwargs
-        All other arguments are forwarded to each call to `text` used to create
-        the text labels.
+    Args:
+        im: The AxesImage to be labeled.
+        data: Data used to annotate.  If None, the image's data is used.  Optional.
+        valfmt: The format of the annotations inside the heatmap.  This should either
+            use the string format method, e.g. "$ {x:.2f}", or be a
+            `matplotlib.ticker.Formatter`.  Optional.
+        textcolors: A list or array of two color specifications.  The first is used for
+            values below a threshold, the second for those above.  Optional.
+        threshold: Value in data units according to which the colors from textcolors are
+            applied.  If None (the default) uses the middle of the colormap as
+            separation.  Optional.
+        **kwargs: All other arguments are forwarded to each call to `text` used to create
+            the text labels.
     """
 
     if not isinstance(data, (list, np.ndarray)):
@@ -198,8 +185,8 @@ def annotate_heatmap(im, data=None, valfmt="{x:.2f}",
 
 
 def distance_scatter(d, topk=10, show=True, save_path =None):
-    """
-    Arguments:
+    """ Distance vs adaptation scatter plots as used in the OTDD paper. 
+    Args:
         d (dict): dictionary of task pair (string), distance (float)
         topk (int): number k of top/bottom distances that will be annotated
     """
