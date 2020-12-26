@@ -433,7 +433,7 @@ def show_grid(tensor, dataname=None, invert=True, title=None,
         if title: ax.set_title(title)
 
 def coupling_to_csv(G, fp, thresh = 1e-14, sep=',', labels1=None,labels2=None):
-    """ Dumps an OT coupling matrix to a csv file """"
+    """ Dumps an OT coupling matrix to a csv file """
     sG = G.copy()
     if thresh is not None:
         sG[G<thresh] = 0
