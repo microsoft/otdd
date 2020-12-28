@@ -35,7 +35,7 @@ dist = DatasetDistance(loaders_src['train'], loaders_tgt['train'],
                        inner_ot_method = 'exact',
                        debiased_loss = True,
                        p = 2, entreg = 1e-1,
-                       device=device)
+                       device='cpu')
 
 d = dist.distance(maxsamples = 1000)
 print(f'OTDD(src,tgt)={d}')
