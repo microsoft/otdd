@@ -229,7 +229,7 @@ class DatasetDistance():
             logger.warning('DatasetDistance initialized with empty data')
 
         if self.src_embedding is not None or self.tgt_embedding is not None:
-            self.feature_cost = partial(embedded_feature_cost,
+            self.feature_cost = partial(FeatureCost,
                                    src_emb = self.src_embedding,
                                    src_dim = (3,28,28),
                                    tgt_emb = self.tgt_embedding,
@@ -1125,14 +1125,15 @@ class FeatureCost():
             embedded using this function prior to distance computation.
 
     """
-    def __init__(self, p=2, src_emb=None, tgt_emb=None, src_dim=None, tgt_dim=None, device='cpu'):
-        assert (src_emb is None) or (src_dim is not None)
-        assert (tgt_emb is None) or (tgt_dim is not None)
-        self.p = p
-        self.src_emb = src_emb
-        self.tgt_emb = tgt_emb
+    def __init__(self, src_embedding=None, tgt_embedding=None, src_dim=None,
+                 tgt_dim=None, p=2, device='cpu'):
+        assert (src_embedding is None) or (src_dim is not None)
+        assert (tgt_embedding is None) or (tgt_dim is not None)
+        self.src_emb = src_embedding
+        self.tgt_emb = tgt_embedding
         self.src_dim = src_dim
         self.tgt_dim = tgt_dim
+        self.p = p
         self.device = device
 
     def _get_batch_shape(self, b):

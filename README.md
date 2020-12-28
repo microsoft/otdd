@@ -50,17 +50,15 @@ By default, OTDD uses the (squared) Euclidean distance between features. To use 
 
 ```python
 
-from otdd.pytorch.distance import DatasetDistance, embedded_feature_cost
+import torch
 from torchvision.models import resnet18
-from otdd.pytorch.utils import load_torchvision_data
-from functools import partial
+
+from otdd.pytorch.datasets import load_torchvision_data
+from otdd.pytorch.distance import DatasetDistance, FeatureCost
 
 # Load MNIST/CIFAR in 3channels (needed by torchvision models)
-
-loaders_src,_ = load_torchvision_data('CIFAR10', valid_size=0, resize = 28, maxsize=2000)
-loaders_tgt,_ = load_torchvision_data('MNIST', valid_size=0, resize = 28,
-                                      to3channels=True, maxsize=2000)
-
+loaders_src = load_torchvision_data('CIFAR10', resize=28, maxsize=2000)[0]
+loaders_tgt = load_torchvision_data('MNIST', resize=28, to3channels=True, maxsize=2000)[0]
 
 # Embed using a pretrained (+frozen) resnet
 embedder = resnet18(pretrained=True).eval()
@@ -69,13 +67,12 @@ for p in embedder.parameters():
     p.requires_grad = False
 
 # Here we use same embedder for both datasets
-feature_cost = partial(embedded_feature_cost,
-                           emb_src = embedder,
-                           dim_src = (3,28,28),
-                           emb_tgt = embedder,
-                           dim_tgt = (3,28,28),
+feature_cost = FeatureCost(src_embedding = embedder,
+                           src_dim = (3,28,28),
+                           tgt_embedding = embedder,
+                           tgt_dim = (3,28,28),
                            p = 2,
-                           device=device)
+                           device='cpu')
 
 dist = DatasetDistance(loaders_src['train'], loaders_tgt['train'],
                           inner_ot_method = 'exact',
@@ -83,9 +80,9 @@ dist = DatasetDistance(loaders_src['train'], loaders_tgt['train'],
                           feature_cost = feature_cost,
                           sqrt_method = 'spectral',
                           sqrt_niters=10,
-                          precision='single',                          
+                          precision='single',
                           p = 2, entreg = 1e-1,
-                          device=device)
+                          device='cpu')
 
 d = dist.distance(maxsamples = 10000)
 
