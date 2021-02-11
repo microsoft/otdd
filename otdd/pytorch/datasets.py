@@ -28,7 +28,7 @@ import h5py
 from .. import ROOT_DIR, HOME_DIR
 
 from .utils import interleave, process_device_arg, random_index_split, \
-                   spectrally_prescribed_matrix
+                   spectrally_prescribed_matrix, rot, rot_evecs
 
 
 logger = logging.getLogger(__name__)
