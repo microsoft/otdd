@@ -149,7 +149,7 @@ class DatasetDistance():
                  ignore_source_labels=False,
                  ignore_target_labels=False,
                  ## Outer OT (dataset to dataset) problem arguments
-                 loss='sinkhorn', debiased_loss=False, p=2, entreg=0.1,
+                 loss='sinkhorn', debiased_loss=True, p=2, entreg=0.1,
                  λ_x=1.0, λ_y=1.0,
                  ## Inner OT (label to label) problem arguments
                  inner_ot_method = 'gaussian_approx',
@@ -568,7 +568,8 @@ class DatasetDistance():
                     DYY2 = self._pwlabel_stats_2['dlabs']
         else:
             sqrtΣ1, sqrtΣ2 = None, None  # Will have to compute during cross
-            DYY1 = DYY2 = None # we don't need these if debiased_loss=False
+            DYY1 = DYY2 = None
+            DYY1_means = DYY2_means = None
 
         ## Compute Cross-Distances
         logger.info('Pre-computing pairwise label Wasserstein distances D1 <-> D2...')
