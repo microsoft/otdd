@@ -2,9 +2,9 @@
 
 Throught this module, source and target are often used to refer to the two datasets
 being compared. This notation is legacy from NLP, and does not carry other particular
-meaning, e.g., the distance is nevertheless symmetric to the order of D1/D2. The
-reason for this notation is that here X and Y are usually reserved to distinguish
-between features and labels.
+meaning, e.g., the distance is nevertheless symmetric (though not always identical -
+due to stochsticity in the computation) to the order of D1/D2. The reason for this
+notation is that here X and Y are usually reserved to distinguish between features and labels.
 
 Other important notation:
     X1, X2: feature tensors of the two datasets
@@ -32,13 +32,14 @@ from matplotlib import cm
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
+from sklearn.cluster import k_means, DBSCAN
 
 ## Local Imports
 from ..plotting import heatmap, gaussian_density_plot, imshow_group_boundaries
 from .utils import load_full_dataset, augmented_dataset, extract_data_targets
 from .moments import compute_label_stats
 from .wasserstein import efficient_pwdist_gauss, pwdist_exact, pwdist_upperbound, pwdist_means_only
-from .utils import register_gradient_hook, process_device_arg, multiclass_hinge_loss
+from .utils import register_gradient_hook, process_device_arg, multiclass_hinge_loss, load_full_dataset
 
 
 import matplotlib
@@ -77,14 +78,16 @@ class DatasetDistance():
         method (str): if set to 'augmentation', the covariance matrix will be
             approximated and appended to each point, if 'precomputed_labeldist',
             the label-to-label distance is computed exactly in advance.
-        symmetric_tasks (bool): whether the two underlying datasets are the same
-            (e.g., when computing distance between subsets of classes).
+        symmetric_tasks (bool): whether the two underlying datasets are the same.
+            If true, will save some computation.
         feature_cost (str or callable): if not 'euclidean', must be a callable
             that implements a cost function between feature vectors.
         src_embedding (callable, optional): if provided, source data will be
             embedded using this function prior to distance computation.
         tgt_embedding (callable, optional): if provided, target data will be
             embedded using this function prior to distance computation.
+        ignore_source_labels (bool): for unsupervised computation of distance
+        ignore_target_labels (bool): for unsupervised computation of distance
         loss (str): loss type to be passed to samples_loss. only 'sinkhorn' is
             accepted for now.
         debiased_loss (bool): whether to use the debiased version of sinkhorn.
@@ -143,6 +146,8 @@ class DatasetDistance():
                  feature_cost='euclidean',
                  src_embedding=None,
                  tgt_embedding=None,
+                 ignore_source_labels=False,
+                 ignore_target_labels=False,
                  ## Outer OT (dataset to dataset) problem arguments
                  loss='sinkhorn', debiased_loss=False, p=2, entreg=0.1,
                  λ_x=1.0, λ_y=1.0,
@@ -177,9 +182,11 @@ class DatasetDistance():
         self.entreg = entreg
         self.loss = loss
         self.debiased_loss = debiased_loss
+        self.feature_cost = feature_cost
         self.src_embedding = src_embedding
         self.tgt_embedding = tgt_embedding
-        self.feature_cost = feature_cost
+        self.ignore_source_labels = ignore_source_labels
+        self.ignore_target_labels = ignore_target_labels
         self.λ_x = λ_x
         self.λ_y = λ_y
         ## For inner (label) OT problem - only used if gaussian approx is False
@@ -240,30 +247,81 @@ class DatasetDistance():
         self.tgt_embedding = None
 
 
+    def _load_infer_labels(self, D, classes=None, reindex=None, reindex_start=None):
+
+        if classes:
+            k = len(classes)
+            labeling_fun = lambda X: torch.LongTensor(k_means(X.numpy(), k)[1])
+        else:
+            labeling_fun = lambda X: torch.LongTensor(DBSCAN(eps=5, min_samples = 4).fit(X).labels_)
+
+        X, Y_infer, Y_true = load_full_dataset(D, targets='infer',
+                                 min_labelcount=self.min_labelcount,
+                                 labeling_function = labeling_fun,
+                                 return_both_targets=True,
+                                 force_label_alignment=True,
+                                 reindex=reindex, reindex_start=reindex_start)
+
+        return X, Y_infer, Y_true
+
+
     def _init_data(self, D1, D2):
         """ Preprocessing of datasets. Extracts value and coding for effective
         (i.e., those actually present in sampled data) class labels.
         """
+
         targets1, classes1, idxs1 = extract_data_targets(D1)
         targets2, classes2, idxs2 = extract_data_targets(D2)
-        self.targets1, self.targets2 = targets1, targets2
-        self.idxs1, self.idxs2 = idxs1, idxs2
 
-        ## Effective dataset size
+        ## Get effective dataset number of samples
+        self.idxs1, self.idxs2 = idxs1, idxs2
         self.n1 = len(self.idxs1)
         self.n2 = len(self.idxs2)
+
+        if (targets1 is None) or self.ignore_source_labels: # Unsupervised setting
+            X, Y_infer, Y_true = self._load_infer_labels(D1, classes1, reindex=True, reindex_start=0)
+            self.targets1 = targets1 = Y_infer
+            self.X1, self.Y1 = X, Y_infer
+            if Y_true is not None: self.Y1_true = Y_true # will not be used by OTDD, stored only for downstream eval
+        else:
+            self.targets1 = targets1
 
         ## Effective classes seen in data (idxs here needed to be filtered
         ## in case dataloader has subsampler)
         ## Indices of classes (might be different from class ids!)
-        vals1, cts1 = torch.unique(targets1[idxs1], return_counts=True)
-        vals2, cts2 = torch.unique(targets2[idxs2], return_counts=True)
+        if (targets1 is None) or self.ignore_source_labels:
+            vals1, cts1 = torch.unique(targets1, return_counts=True)
+        else:
+            vals1, cts1 = torch.unique(targets1[idxs1], return_counts=True)
 
         ## Ignore everything with a label occurring less than k times
         self.V1 = torch.sort(vals1[cts1 >= self.min_labelcount])[0]
+
+        if (targets2 is None) or self.ignore_target_labels:
+            reindex_start = len(self.V1) if (self.loss == 'sinkhorn' and self.debiased_loss) else True
+            X, Y_infer, Y_true = self._load_infer_labels(D2, classes2, reindex=True, reindex_start=reindex_start)
+            self.targets2 = targets2 = Y_infer - reindex_start
+            assert self.targets2.min() == 0
+            self.X2, self.Y2 = X, Y_infer
+            if Y_true is not None: self.Y2_true = Y_true
+        else:
+            self.targets2 = targets2
+
+        ## Effective classes seen in data (idxs here needed to be filtered
+        ## in case dataloader has subsampler)
+        ## Indices of classes (might be different from class ids!)
+        if (targets2 is None) or self.ignore_target_labels:
+            vals2, cts2 = torch.unique(targets2, return_counts=True)
+        else:
+            vals2, cts2 = torch.unique(targets2[idxs2], return_counts=True)
+
+        ## Ignore everything with a label occurring less than k times
         self.V2 = torch.sort(vals2[cts2 >= self.min_labelcount])[0]
+
+
         self.classes1 = [classes1[i] for i in self.V1]
         self.classes2 = [classes2[i] for i in self.V2]
+
 
         if self.method == 'jdot': ## JDOT only works if same labels on both datasets
             assert torch.all(self.V1 == self.V2)
@@ -320,29 +378,22 @@ class DatasetDistance():
 
         if self.loss == 'sinkhorn' and self.debiased_loss:
             ## We will need to relabel targets {0,...,n-1} and {n,...,n-m-1}
-            self.X1, self.Y1 = load_full_dataset(self.D1, targets=True,
-                                                 labels_keep=self.V1,
-                                                 maxsamples=maxsamples,
-                                                 device=device,
-                                                 dtype=dtype,
-                                                 reindex=range(len(self.V1)))
-            if self.symmetric_tasks:
-                self.X2, self.Y2 = self.X1, self.Y1
-            else:
-                self.X2, self.Y2 = load_full_dataset(self.D2, targets=True,
-                                                     labels_keep=self.V2,
-                                                     maxsamples=maxsamples,
-                                                     device=device,
-                                                     dtype=dtype,
-                                                     reindex=range(len(self.V1), len(self.V1) + len(self.V2)))
+            reindex_start_d2 = len(self.V1)
         else:
             ## Suffices to relabel targets {0,...,n-1} and {0,...,m-1}
+            reindex_start_d2 = 0
+
+        if self.X1 is None or self.Y1 is None:
+            assert not self.ignore_source_labels, 'Should not be here if igoring target labels'
             self.X1, self.Y1 = load_full_dataset(self.D1, targets=True,
                                                  labels_keep=self.V1,
                                                  maxsamples=maxsamples,
                                                  device=device,
                                                  dtype=dtype,
-                                                 reindex=True)
+                                                 reindex=True,
+                                                 reindex_start = 0)
+        if self.X2 is None or self.Y2 is None:
+            assert not self.ignore_target_labels, 'Should not be here if igoring target labels'
             if self.symmetric_tasks:
                 self.X2, self.Y2 = self.X1, self.Y1
             else:
@@ -351,7 +402,9 @@ class DatasetDistance():
                                                      maxsamples=maxsamples,
                                                      device=device,
                                                      dtype=dtype,
-                                                     reindex=True)
+                                                     reindex=True,
+                                                     reindex_start = reindex_start_d2)
+
 
         logger.info("Full datasets sizes")
         logger.info(" * D1 = {} x {} ({} unique labels)".format(*
@@ -484,7 +537,7 @@ class DatasetDistance():
                 elif self.inner_ot_method == 'means_only':
                     DYY1 = pwdist(Means[0])
                     DYY1_means = DYY1
-                else:
+                else: # Exact
                     DYY1 = pwdist(self.X1, self.Y1)
             else:
                 if self.inner_ot_method == 'gaussian_approx':
@@ -503,7 +556,7 @@ class DatasetDistance():
                 elif self.inner_ot_method == 'means_only':
                     DYY2 = pwdist(Means[1])
                     DYY2_means = DYY2
-                else:
+                else: # Exact
                     DYY2 = pwdist(self.X2, self.Y2)
             else:
                 logger.info('Found pre-existing D2 label-label stats, will not recompute')
@@ -515,6 +568,7 @@ class DatasetDistance():
                     DYY2 = self._pwlabel_stats_2['dlabs']
         else:
             sqrtΣ1, sqrtΣ2 = None, None  # Will have to compute during cross
+            DYY1 = DYY2 = None # we don't need these if debiased_loss=False
 
         ## Compute Cross-Distances
         logger.info('Pre-computing pairwise label Wasserstein distances D1 <-> D2...')
@@ -532,7 +586,7 @@ class DatasetDistance():
 
         if self.debiased_loss and self.symmetric_tasks:
             ## In this case we can reuse DXY to get DYY1 and DYY
-            DYY1, DYY2 = DXY, DXY
+            DYY1, DYY2 = DYY12, DYY12
             if self.inner_ot_method in ['gaussian_approx', 'naive_upperbound', 'means_only']:
                 DYY1_means, DYY2_means = DXY_means, DXY_means
 
@@ -546,7 +600,6 @@ class DatasetDistance():
             D = DYY12
             if self.inner_ot_method in ['gaussian_approx', 'naive_upperbound', 'means_only']:
                 D_means = DYY12_means
-
 
         ## Collect and save
         self.label_distances  = D
@@ -584,7 +637,8 @@ class DatasetDistance():
 
         """
         device_dists = self.device
-        if (self.n1 > 5000 or self.n2 > 5000) and maxsamples > 1000 and self.device != 'cpu':
+        GPU_LIMIT = 10000
+        if (self.n1 > GPU_LIMIT or self.n2 > GPU_LIMIT) and maxsamples > GPU_LIMIT and self.device != 'cpu':
             logger.warning('Warning: maxsamples = {} > 5000, and device = {}. Loaded data' \
                    ' might not fit in GPU. Computing distances on' \
                    ' CPU.'.format(maxsamples, self.device))

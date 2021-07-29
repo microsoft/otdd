@@ -21,19 +21,31 @@ import torchvision.datasets as dset
 
 import torchtext
 from torchtext.data.utils import get_tokenizer
-import sentence_transformers as st
 
 import h5py
 
-from .. import ROOT_DIR, HOME_DIR
+from .. import DATA_DIR
 
 from .utils import interleave, process_device_arg, random_index_split, \
                    spectrally_prescribed_matrix, rot, rot_evecs
 
+from .sqrtm import create_symm_matrix
 
 logger = logging.getLogger(__name__)
 
 
+DATASET_NCLASSES = {
+    'MNIST': 10,
+    'FashionMNIST': 10,
+    'EMNIST': 26,
+    'KMNIST': 10,
+    'USPS': 10,
+    'CIFAR10': 10,
+    'SVHN': 10,
+    'STL10': 10,
+    'LSUN': 10,
+    'tiny-ImageNet': 200
+}
 
 DATASET_SIZES = {
     'MNIST': (28,28),
@@ -42,6 +54,10 @@ DATASET_SIZES = {
     'QMNIST': (28,28),
     'KMNIST': (28,28),
     'USPS': (16,16),
+    'SVHN': (32, 32),
+    'CIFAR10': (32, 32),
+    'STL10': (96, 96),
+    'tiny-ImageNet': (64,64)
 }
 
 DATASET_NORMALIZATION = {
@@ -52,6 +68,7 @@ DATASET_NORMALIZATION = {
     'EMNIST' : ((0.1307,), (0.3081,)),
     'KMNIST' : ((0.1307,), (0.3081,)),
     'ImageNet': ((0.485, 0.456, 0.406),(0.229, 0.224, 0.225)),
+    'tiny-ImageNet': ((0.485, 0.456, 0.406),(0.229, 0.224, 0.225)),
     'CIFAR10': ((0.485, 0.456, 0.406),(0.229, 0.224, 0.225)),
     'CIFAR100': ((0.485, 0.456, 0.406),(0.229, 0.224, 0.225)),
     'STL10': ((0.485, 0.456, 0.406),(0.229, 0.224, 0.225))
@@ -115,18 +132,20 @@ class SubsetSampler(torch.utils.data.Sampler):
 
 class CustomTensorDataset(torch.utils.data.Dataset):
     """TensorDataset with support of transforms."""
-    def __init__(self, tensors, transform=None):
+    def __init__(self, tensors, transform=None, target_transform=None):
         assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
         self.tensors = tensors
         self.transform = transform
+        self.target_transform = target_transform
 
     def __getitem__(self, index):
         x = self.tensors[0][index]
-
         if self.transform:
             x = self.transform(x)
 
         y = self.tensors[1][index]
+        if self.target_transform:
+            y = self.target_transform(y)
 
         return x, y
 
@@ -224,7 +243,7 @@ def make_gmm_dataset(config='random', classes=10,dim=2,samples=10,spread = 1,
 
     """
     means, covs, distribs = [], [], []
-    _configd = gmm_configs[config]
+    _configd = None if config == 'random' else gmm_configs[config]
     spread = spread if (config == 'random' or not 'spread' in _configd) else _configd['spread']
     shift  = shift if (config == 'random' or not 'shift' in _configd) else _configd['shift']
 
@@ -254,8 +273,7 @@ def make_gmm_dataset(config='random', classes=10,dim=2,samples=10,spread = 1,
         X += torch.tensor(shift)
 
     if shuffle:
-        indx = torch.arange(Y.shape[0])
-        print(indx)
+        idxs = torch.randperm(Y.shape[0])
         X = X[idxs, :]
         Y = Y[idxs]
     return X, Y, distribs
@@ -276,7 +294,6 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
             transform_dataname = dataname
         else:
             transform_dataname = 'ImageNet'
-
 
         transform_list = []
 
@@ -307,11 +324,11 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
     if data is None:
         DATASET = getattr(torchvision.datasets, dataname)
         if datadir is None:
-            datadir = os.path.join(ROOT_DIR,'data/')
+            datadir = DATA_DIR
         if dataname == 'EMNIST':
             split = 'letters'
-            train = DATASET(datadir, split=split, train=True, download=True, transform=train_transform)
-            test = DATASET(datadir, split=split, train=False, download=True, transform=valid_transform)
+            train = DATASET(datadir, split=split, train=True, download=download, transform=train_transform)
+            test = DATASET(datadir, split=split, train=False, download=download, transform=valid_transform)
             ## EMNIST seems to have a bug - classes are wrong
             _merged_classes = set(['C', 'I', 'J', 'K', 'L', 'M', 'O', 'P', 'S', 'U', 'V', 'W', 'X', 'Y', 'Z'])
             _all_classes = set(list(string.digits + string.ascii_letters))
@@ -329,15 +346,25 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
                 train.targets -= 1
                 test.targets -= 1
         elif dataname == 'STL10':
-            train = DATASET(datadir, split='train', download=True, transform=train_transform)
-            test = DATASET(datadir, split='test', download=True, transform=valid_transform)
+            train = DATASET(datadir, split='train', download=download, transform=train_transform)
+            test = DATASET(datadir, split='test', download=download, transform=valid_transform)
             train.classes = ['airplane', 'bird', 'car', 'cat', 'deer', 'dog', 'horse', 'monkey', 'ship', 'truck']
             test.classes = train.classes
             train.targets = torch.tensor(train.labels)
             test.targets = torch.tensor(test.labels)
+        elif dataname == 'SVHN':
+            train = DATASET(datadir, split='train', download=download, transform=train_transform)
+            test = DATASET(datadir, split='test', download=download, transform=valid_transform)
+            ## In torchvision, SVHN 0s have label 0, not 10
+            train.classes = test.classes = [str(i) for i in range(10)]
+            train.targets = torch.tensor(train.labels)
+            test.targets = torch.tensor(train.labels)
+        elif dataname == 'LSUN':
+            pdb.set_trace()
+            train = DATASET(datadir, classes='train', download=download, transform=train_transform)
         else:
-            train = DATASET(datadir, train=True, download=True, transform=train_transform)
-            test = DATASET(datadir, train=False, download=True, transform=valid_transform)
+            train = DATASET(datadir, train=True, download=download, transform=train_transform)
+            test = DATASET(datadir, train=False, download=download, transform=valid_transform)
     else:
         train, test = data
 
@@ -368,6 +395,16 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
         elif type(splits) in [list, np.ndarray]:
             snames = ['split_{}'.format(i) for i in range(len(splits))]
             slens  = splits
+        slens = np.array(slens)
+        if any(slens < 0): # Split expressed as -1, i.e., 'leftover'
+            assert sum(slens < 0) == 1, 'Can only deal with one split being -1'
+            idx_neg = np.where(slens == -1)[0][0]
+            slens[idx_neg] = len(train) - np.array([x for x in slens if x > 0]).sum()
+        elif slens.sum() > len(train):
+            logging.warning("Not enough samples to satify splits..cropping train...")
+            if 'train' in snames:
+                slens[snames.index('train')] = len(train) - slens[np.array(snames) != 'train'].sum()
+
         idxs = np.arange(len(train))
         if not stratified:
             np.random.shuffle(idxs)
@@ -417,29 +454,35 @@ def load_torchvision_data(dataname, valid_size=0.1, splits=None, shuffle=True,
     return fold_loaders, {'train': train, 'test':test}
 
 
-def load_imagenet(datadir=None, resize=None, tiny=False, **kwargs):
+def load_imagenet(datadir=None, resize=None, tiny=False, augmentations=False, **kwargs):
     """ Load ImageNet dataset """
-    print(datadir)
     if datadir is None and (not tiny):
-        datadir = os.path.join(HOME_DIR,'datasets/imagenet')
+        datadir = os.path.join(DATA_DIR,'imagenet')
     elif datadir is None and tiny:
-        datadir = os.path.join(HOME_DIR,'datasets/tiny-imagenet-200')
-
+        datadir = os.path.join(DATA_DIR,'tiny-imagenet-200')
 
     traindir = os.path.join(datadir, "train")
     validdir = os.path.join(datadir, "val")
-    train_transform_list = [
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(
-            brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2
-        ),
-        transforms.ToTensor(),
-        transforms.Normalize(*DATASET_NORMALIZATION['ImageNet'])
-    ]
+    if augmentations:
+        train_transform_list = [
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(
+                brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2
+            ),
+            transforms.ToTensor(),
+            transforms.Normalize(*DATASET_NORMALIZATION['ImageNet'])
+        ]
+    else:
+        train_transform_list = [
+            transforms.Resize(224), # revert back to 256
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(*DATASET_NORMALIZATION['ImageNet'])
+        ]
 
     valid_transform_list = [
-        transforms.Resize(256),
+        transforms.Resize(224),# revert back to 256
         transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(*DATASET_NORMALIZATION['ImageNet'])
@@ -464,7 +507,6 @@ def load_imagenet(datadir=None, resize=None, tiny=False, **kwargs):
             valid_transform_list
         ),
     )
-
     fold_loaders, dsets = load_torchvision_data('Imagenet', transform=[],
                                                 data=(train_data, valid_data),
                                                 **kwargs)
@@ -528,8 +570,8 @@ def load_textclassification_data(dataname, vecname='glove.42B.300d', shuffle=Tru
 
     debug = False
 
-    dataroot = '/tmp/' if debug else os.path.join(ROOT_DIR, 'data')
-    veccache = os.path.join(ROOT_DIR,'data','.vector_cache')
+    dataroot = '/tmp/' if debug else DATA_DIR #os.path.join(ROOT_DIR, 'data')
+    veccache = os.path.join(dataroot,'.vector_cache')
 
     if loading_method == 'torchtext':
         ## TextClassification object datasets already do word to token mapping inside.
@@ -559,6 +601,7 @@ def load_textclassification_data(dataname, vecname='glove.42B.300d', shuffle=Tru
         else:
             batch_processor = partial(batch_processor_tt,TEXT=text_field,return_lengths=True)
     elif loading_method == 'sentence_transformers':
+        import sentence_transformers as st
         dpath  = os.path.join(dataroot,TEXTDATA_PATHS[dataname])
         reader = st.readers.LabelSentenceReader(dpath)
         if embedding_model is None:

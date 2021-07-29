@@ -1,12 +1,31 @@
 # Optimal Transport Dataset Distance (OTDD)
 
-Codebase accompanying the paper [Geometric Dataset Distances via Optimal Transport](https://papers.nips.cc/paper/2020/file/f52a7b2610fb4d3f74b4106fb80b233d-Paper.pdf). See the paper for technical details, or the [MSR Blog Post](https://www.microsoft.com/en-us/research/blog/measuring-dataset-similarity-using-optimal-transport/) for a high-level introduction.
+Codebase accompanying the papers:
+* [Geometric Dataset Distances via Optimal Transport](https://papers.nips.cc/paper/2020/file/f52a7b2610fb4d3f74b4106fb80b233d-Paper.pdf).
+* [Dataset Dynamics via Gradient Flows in Probability Space](http://proceedings.mlr.press/v139/alvarez-melis21a/alvarez-melis21a.pdf).
+
+See the papers for technical details, or the [MSR Blog Post](https://www.microsoft.com/en-us/research/blog/measuring-dataset-similarity-using-optimal-transport/) for a high-level introduction.
 
 ## Getting Started
 
 ### Installation
 
 **Note**: It is highly recommended that the following be done inside a virtual environment
+
+
+#### Via Conda (recommended)
+
+If you use [ana|mini]conda , you can simply do:
+
+```
+conda env create -f environment.yaml python=3.8
+conda activate otdd
+conda install .
+```
+
+(you might need to install pytorch separately if you need a custom install)
+
+#### Via pip
 
 First install dependencies. Start by install pytorch with desired configuration using the instructions provided in the [pytorch website](https://pytorch.org/get-started/locally/). Then do:
 ```
@@ -17,9 +36,9 @@ Finally, install this package:
 pip install .
 ```
 
-### Usage Examples
+## Usage Examples
 
-A vanilla example:
+A vanilla example for OTDD:
 
 ```python
 from otdd.pytorch.datasets import load_torchvision_data
@@ -87,6 +106,48 @@ dist = DatasetDistance(loaders_src['train'], loaders_tgt['train'],
 d = dist.distance(maxsamples = 10000)
 
 ```
+
+
+### Gradient Flows
+
+```python
+
+import os
+import matplotlib
+%matplotlib inline # Comment out if not on notebook
+
+from otdd.pytorch.flows import OTDD_Gradient_Flow
+from otdd.pytorch.flows import CallbackList, ImageGridCallback, TrajectoryDump
+
+# Load datasets
+loaders_src = load_torchvision_data('MNIST', valid_size=0, resize = 28, maxsize=2000)[0]
+loaders_tgt = load_torchvision_data('USPS',  valid_size=0, resize = 28, maxsize=2000)[0]
+
+
+outdir =  os.path.join('out', 'flows')
+callbacks = CallbackList([
+  ImageGridCallback(display_freq=2, animate=False, save_path = outdir + '/grid'),
+])
+
+flow = OTDD_Gradient_Flow(loaders_src['train'], loaders_tgt['train'],
+                          ### Gradient Flow Args
+                          method = 'xonly-attached',                          
+                          use_torchoptim=True,
+                          optim='adam',
+                          steps=10,
+                          step_size=1,
+                          callback=callbacks,              
+                          clustering_method='kmeans',                                      
+                          ### OTDD Args                          
+                          online_stats=True,
+                          diagonal_cov = False,
+                          device='cpu'
+                          )
+d,out = flow.flow()
+
+```
+
+
 
 ## Acknowledgements
 
