@@ -1,5 +1,5 @@
 import os
-from itertools import zip_longest
+from itertools import zip_longest, product
 from functools import partial
 from os.path import dirname
 import numpy as np
@@ -10,6 +10,7 @@ import random
 import pdb
 import string
 import logging
+from sklearn.cluster import k_means, DBSCAN
 
 import matplotlib.pyplot as plt
 
@@ -21,9 +22,8 @@ import torch.nn as nn
 import torch.utils.data as torchdata
 import torch.utils.data.dataloader as dataloader
 from torch.utils.data.sampler import SubsetRandomSampler
+from munkres import Munkres
 
-
-from .. import ROOT_DIR
 from .nets import BoWSentenceEmbedding
 from .sqrtm import sqrtm, sqrtm_newton_schulz
 
@@ -116,15 +116,20 @@ def extract_dataset_targets(d):
         targets = dataset.targets
     elif hasattr(dataset, '_data'): # some torchtext datasets
         targets = torch.LongTensor([e[0] for e in dataset._data])
-    elif hasattr(dataset, 'tensors'): # TensorDatasets
+    elif hasattr(dataset, 'tensors') and len(dataset.tensors) == 2: # TensorDatasets
         targets = dataset.tensors[1]
+    elif hasattr(dataset, 'tensors') and len(dataset.tensors) == 1:
+        logger.warning('Dataset seems to be unlabeled - this modality is in beta mode!')
+        targets = None
     else:
         raise ValueError("Could not find targets in dataset.")
 
     classes = dataset.classes if hasattr(dataset, 'classes') else torch.sort(torch.unique(targets)).values
 
-    if indices is None:
+    if (indices is None) and (targets is not None):
         indices = np.arange(len(targets))
+    elif indices is None:
+        indices = np.arange(len(dataset))
     else:
         indices = np.sort(indices)
 
@@ -187,18 +192,23 @@ def extract_data_targets(d):
         raise  ValueError("Incompatible data object")
 
 
-def load_full_dataset(data, targets=False, labels_keep=None, batch_size = 256,
+def load_full_dataset(data, targets=False, return_both_targets=False,
+                      labels_keep=None, min_labelcount=None,
+                      batch_size = 256,
                       maxsamples = None, device='cpu', dtype=torch.FloatTensor,
-                      feature_embedding=None,
-                      reindex=False):
+                      feature_embedding=None, labeling_function=None,
+                      force_label_alignment = False,
+                      reindex=False, reindex_start=0):
     """ Loads full dataset into memory.
 
     Arguments:
-        targets (bool): Whether to colleect and return targets (labels) too
+        targets (bool, or 'infer'): Whether to colleect and return targets (labels) too
+        return_both_targets (bool): Only used when targets='infer'. Indicates whether
+            the true targets should also be returned.
         labels_keep (list): If provided, will only keep examples with these labels
-        reindex (bool, list): Whether/how to reindex labels. If True, will
-                              reindex to {0,...,max(index)}. If list provided,
-                              will use it to reindex.
+        reindex (bool): Whether/how to reindex labels. If True, will
+                              reindex to {reindex_start,...,reindex_start+num_unique_labels}.
+
         maxsamples (int): Maximum number of examples to load. (this might not equal
                           actual size of return tensors, if label_keep also provided)
 
@@ -245,9 +255,13 @@ def load_full_dataset(data, targets=False, labels_keep=None, batch_size = 256,
     Y = []
     seen_targets = {}
     keeps = None
+    collect_targets = targets and ((targets != 'infer') or return_both_targets)
 
+    for batch in tqdm(loader, leave=False):
+        x = batch[0]
+        if (len(batch) == 2) and targets:
+            y = batch[1]
 
-    for x,y in tqdm(loader, leave=False):
         if feature_embedding is not None:
             ## if embedding is cuda, and device='cpu', want to map to device *after*
             ## embedding, to take advantage of CUDA forward pass.
@@ -259,11 +273,30 @@ def load_full_dataset(data, targets=False, labels_keep=None, batch_size = 256,
             x = x.type(dtype).to(device)
 
         X.append(x.squeeze().view(x.shape[0],-1))
-        if targets:
+        if collect_targets: # = True or infer
             Y.append(y.to(device).squeeze())
     X = torch.cat(X)
 
-    if targets: Y = torch.cat(Y)
+    if collect_targets: Y = torch.cat(Y)
+
+    if targets == 'infer':
+        logger.warning('Performing clustering')
+        if Y is not None: # Save true targets before overwriting them with inferred
+            Y_true = Y
+        Y = labeling_function(X)
+
+        if force_label_alignment:
+            K = torch.unique(Y_true).shape[0]
+            M = [((Y == k) & (Y_true == l)).sum().item() for k,l in product(range(K),range(K))]
+            M = np.array(M).reshape(K,K)
+            idx_map = dict(Munkres().compute(1 - M/len(Y)))
+            Y = torch.tensor([idx_map[int(y.item())] for y in Y])
+
+    if min_labelcount is not None:
+        assert not labels_keep, "Cannot specify both min_labelcount and labels_keep"
+        vals, cts = torch.unique(Y, return_counts=True)
+        labels_keep = torch.sort(vals[cts >= min_labelcount])[0]
+
 
     if labels_keep is not None: # Filter out examples with unwanted label
         keeps = np.isin(Y.cpu(), labels_keep)
@@ -272,18 +305,19 @@ def load_full_dataset(data, targets=False, labels_keep=None, batch_size = 256,
 
     if orig_idxs is not None:
         loader.sampler.indices = orig_idxs
-    if not targets:
+    if targets is False:
         return X
     else:
         if reindex:
             labels = sorted(torch.unique(Y).tolist())
-            if type(reindex) is bool:
-                reindex_vals = range(len(labels))
-            else:
-                reindex_vals = reindex
+            reindex_vals = range(reindex_start, reindex_start + len(labels))
             lmap = dict(zip(labels, reindex_vals))
             Y = torch.LongTensor([lmap[y.item()] for y in Y]).to(device)
-        return X, Y
+        if not return_both_targets:
+            return X, Y
+        else:
+            return X, Y, Y_true
+
 
 def sample_kshot_task(dataset,k=10,valid=None):
     """ This is agnostic to the labels used, it will inferr them from dataset
@@ -517,3 +551,10 @@ def spectrally_prescribed_matrix(evals, evecs):
     S = torch.diag(evals)
     M = torch.matmul(evecs, torch.matmul(S, evecs.T))
     return M
+
+#### MISC
+
+def set_parameter_requires_grad(model, feature_extracting):
+    if feature_extracting:
+        for param in model.parameters():
+            param.requires_grad = False
