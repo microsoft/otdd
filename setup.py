@@ -20,7 +20,10 @@ setup(
       'opentsne',
       'seaborn',
       'scikit-learn',
-      'pandas'
+      'pandas',
+      'geomloss',
+      'munkres',
+      'adjustText'
     ],
     include_package_data=True,
     zip_safe=False

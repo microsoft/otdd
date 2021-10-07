@@ -15,6 +15,7 @@ pot
 cmake
 pykeops
 git+https://github.com/jeanfeydy/geomloss
+munkres
 
 tqdm
 attrdict
