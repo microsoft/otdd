@@ -23,11 +23,7 @@ setup(
       'pandas',
       'geomloss',
       'munkres',
-<<<<<<< HEAD
       'adjustText'
-=======
-      'adjustText',
->>>>>>> 60501b39492550cbe1de8e721c108c0672524ba7
     ],
     include_package_data=True,
     zip_safe=False
