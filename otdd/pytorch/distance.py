@@ -962,7 +962,7 @@ class DatasetDistance():
 
         elif color_by == 'label':
             ## These are for the density plots
-            colors = ['red', 'blue'] 
+            colors = ['red', 'blue']
             cmaps = [cm.Reds, cm.Blues]
 
             ## These are for the scatter plots
@@ -1142,25 +1142,27 @@ class IncomparableDatasetDistance(DatasetDistance):
         DYY1, DYY2 = self._get_label_distances()
 
         Z1 = torch.cat((self.X1, self.Y1.type(self.X1.dtype).unsqueeze(1)), -1)
+        Z1 = Z1.to(self.device)
         C1 = batch_augmented_cost(Z1.unsqueeze(0), Z1.unsqueeze(0), W=DYY1).squeeze()
 
         Z2 = torch.cat((self.X2, self.Y2.type(self.X2.dtype).unsqueeze(1)), -1)
+        Z2 = Z2.to(self.device)
         C2 = batch_augmented_cost(Z2.unsqueeze(0), Z2.unsqueeze(0), W=DYY2).squeeze()
 
         return C1, C2
 
     def distance(self, maxsamples=10000, return_coupling=False):
         C1, C2 = self._compute_intraspace_distances()
-        a, b = ot.unif(self.X1.shape[0]), ot.unif(self.X2.shape[0])
+        a = torch.ones(self.X1.shape[0]).to(self.device)/self.X1.shape[0]
+        b = torch.ones(self.X2.shape[0]).to(self.device)/self.X2.shape[0]
 
         ## Normalize distances
         C1 = (C1 - C1.min())/C1.max()
         C2 = (C2 - C2.min())/C2.max()
 
         π, log = ot.gromov.entropic_gromov_wasserstein(C1, C2, a, b,
-                                                      loss_fun = 'square_loss',
-                                                      epsilon=self.entreg,
-                                                      log=True, verbose=True)
+                                loss_fun = 'square_loss', epsilon=self.entreg,
+                                log=True, verbose=True)
         dist = log['gw_dist']
 
         if return_coupling:
@@ -1237,7 +1239,7 @@ def batch_jdot_cost(Z1, Z2, p=2, alpha=1.0, feature_cost=None):
     Y1 = Z1[:, :, -1].long()
     Y2 = Z2[:, :, -1].long()
     if feature_cost is None or feature_cost == 'euclidean': # default is euclidean
-        C1 = cost_routines[p](Z1[:, :, :-1], Z2[:, :, :-1]) 
+        C1 = cost_routines[p](Z1[:, :, :-1], Z2[:, :, :-1])
     else:
         C1 = feature_cost(Z1[:, :, :-1], Z2[:, :, :-1])
     ## hinge loss assumes classes and indices are same for both - shift back to [0,K]
@@ -1320,6 +1322,6 @@ def batch_augmented_cost(Z1, Z2, W=None, Means=None, Covs=None, feature_cost=Non
 
     ## NOTE: geomloss's cost_routines as defined above already divide by p. We do
     ## so here too for consistency. But as a consequence, need to divide C2 by p too.
-    D = λ_x * C1  +  λ_y * (C2/p) 
+    D = λ_x * C1  +  λ_y * (C2/p)
 
     return D
