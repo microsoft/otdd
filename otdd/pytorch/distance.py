@@ -802,7 +802,7 @@ class DatasetDistance():
         W = self._get_label_distances().to(device)
 
         C = batch_augmented_cost(Z1.unsqueeze(0), Z2.unsqueeze(0),W=W).squeeze()
-        C = C.cpu()
+        C = C.cpu().numpy()
         if gpu is None:
             gpu = self.device != 'cpu'
         if 'method' in kwargs and kwargs['method'] == 'emd':

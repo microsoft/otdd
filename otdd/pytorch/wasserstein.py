@@ -321,7 +321,7 @@ def pwdist_exact(X1, Y1, X2=None, Y2=None, symmetric=False, loss='sinkhorn',
         )
     elif loss == 'wasserstein':
         def distance(Xa, Xb):
-            C = cost_function(Xa, Xb).cpu()
+            C = cost_function(Xa, Xb).cpu().numpy()
             return torch.tensor(ot.emd2(ot.unif(Xa.shape[0]), ot.unif(Xb.shape[0]), C))#, verbose=True)
     else:
         raise ValueError('Wrong loss')
