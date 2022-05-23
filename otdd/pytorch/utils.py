@@ -277,7 +277,10 @@ def load_full_dataset(data, targets=False, return_both_targets=False,
             Y.append(y.to(device).squeeze())
     X = torch.cat(X)
 
-    if collect_targets: Y = torch.cat(Y)
+    if collect_targets: 
+        if Y[-1].dim() == 0:
+            Y[-1] = Y[-1][None]
+        Y = torch.cat(Y)
 
     if targets == 'infer':
         logger.warning('Performing clustering')
